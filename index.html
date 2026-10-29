@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Table Companion</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&family=Alegreya+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#e8eaef;--sf:#fff;--sf2:#f1f2f6;--tx:#1d2029;--mu:#5d6475;--ac:#8a6a1c;--acb:#c9a24b;--acx:#1d2029;--rd:#a8382e;--bd:#cdd1db;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#161922;--sf:#212633;--sf2:#2a3040;--tx:#e8e3d6;--mu:#9aa1b3;--ac:#d4af5a;--acb:#c9a24b;--acx:#1a1708;--rd:#d9604f;--bd:#363d50}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#161922;--sf:#212633;--sf2:#2a3040;--tx:#e8e3d6;--mu:#9aa1b3;--ac:#d4af5a;--acb:#c9a24b;--acx:#1a1708;--rd:#d9604f;--bd:#363d50}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:17px/1.45 "Alegreya Sans",system-ui,sans-serif;min-height:100vh}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font:800 1.5rem Cinzel,Georgia,serif;margin:4px 0 12px;letter-spacing:.02em}
+h2{font:600 1.1rem Cinzel,Georgia,serif;margin:18px 0 8px}
+nav{display:flex;gap:6px;overflow-x:auto;margin-bottom:14px}
+nav button{flex:1;white-space:nowrap;background:var(--sf);color:var(--tx);border:1px solid var(--bd);padding:10px 14px;border-radius:8px;font:600 .95rem Cinzel,Georgia,serif;cursor:pointer}
+nav button[aria-selected=true]{background:var(--acb);color:var(--acx);border-color:var(--acb)}
+section{display:none}section.on{display:block}
+.card{background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:12px}
+button{font:inherit;cursor:pointer}
+.btn{background:var(--acb);color:var(--acx);border:0;border-radius:8px;padding:9px 14px;font-weight:700}
+.ghost{background:var(--sf2);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px 12px}
+.danger{background:none;border:0;color:var(--rd);font-weight:700}
+input,textarea{font:inherit;background:var(--sf2);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px;width:100%}
+input:focus-visible,button:focus-visible,textarea:focus-visible{outline:2px solid var(--ac);outline-offset:1px}
+label{display:block;font-size:.85rem;color:var(--mu);flex:1;min-width:110px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:8px}
+.dice{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.dice button{background:var(--sf2);color:var(--tx);border:1px solid var(--bd);border-radius:10px;padding:14px 0;font:800 1.05rem Cinzel,Georgia,serif}
+.dice button.sel{background:var(--acb);color:var(--acx);border-color:var(--acb)}
+#res{font:800 3.2rem Cinzel,Georgia,serif;color:var(--ac);text-align:center;min-height:1.3em}
+#resd{text-align:center;color:var(--mu);min-height:1.4em}
+.mu{color:var(--mu)}
+.abs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.ab{display:grid;grid-template-columns:auto 1fr auto;gap:6px;align-items:center;background:var(--sf2);border-radius:8px;padding:8px}
+.ab span{font-weight:700}.ab b{font-size:1.2rem;color:var(--ac)}
+.ab input{width:60px}.ab button{grid-column:1/4}
+.hpb{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.hpb input{width:76px}
+.it{display:flex;gap:8px;align-items:center;padding:10px;border:1px solid var(--bd);border-radius:8px;margin-bottom:8px;background:var(--sf)}
+.it.cur{border-color:var(--acb);box-shadow:0 0 0 2px var(--acb)}
+.it .nm{flex:1;min-width:0;font-weight:700}
+.it input{width:64px}
+details{border-bottom:1px solid var(--bd);padding:8px 0}summary{cursor:pointer;font-weight:700}
+.q{display:flex;gap:10px;align-items:center;padding:6px 0}.q input[type=checkbox]{width:22px;height:22px}
+.done{text-decoration:line-through;color:var(--mu)}#hist div{padding:3px 0;border-bottom:1px solid var(--bd);color:var(--mu);font-size:.95rem}
+</style>
+</head>
+<body>
+<main>
+<h1>Table Companion</h1>
+<nav role="tablist">
+<button role="tab" data-tab="dice" aria-selected="true">Dice</button>
+<button role="tab" data-tab="char" aria-selected="false">Character</button>
+<button role="tab" data-tab="combat" aria-selected="false">Combat</button>
+<button role="tab" data-tab="camp" aria-selected="false">Campaign</button>
+<button role="tab" data-tab="tools" aria-selected="false">Tools</button>
+</nav>
+
+<section id="dice" class="on">
+<div class="card">
+<div id="res">–</div><div id="resd">Pick a die and roll</div>
+</div>
+<div class="card">
+<div class="dice" id="dgrid"></div>
+<div class="row" style="margin-top:12px">
+<label>How many<input id="dn" type="number" min="1" max="20" value="1"></label>
+<label>Modifier<input id="dm" type="number" value="0"></label>
+</div>
+<div class="row">
+<button class="btn" data-act="roll">Roll</button>
+<button class="ghost" data-act="adv">Advantage (d20)</button>
+<button class="ghost" data-act="dis">Disadvantage (d20)</button>
+</div>
+</div>
+<h2>Recent rolls</h2><div id="hist" class="card"></div>
+</section>
+
+<section id="char"></section>
+
+<section id="combat">
+<div class="card">
+<div class="row">
+<label>Name<input id="cn" placeholder="Goblin 1"></label>
+<label>Initiative<input id="ci" type="number" placeholder="14"></label>
+<label>HP<input id="ch" type="number" placeholder="7"></label>
+</div>
+<div class="row"><button class="btn" data-act="addc">Add combatant</button><button class="ghost" data-act="rollinit">Roll d20 for initiative</button></div>
+</div>
+<div class="row"><b id="rnd"></b><button class="btn" data-act="next">Next turn</button><button class="ghost" data-act="resetc">Clear encounter</button></div>
+<div id="clist"></div>
+</section>
+
+<section id="camp">
+<div class="card">
+<label>Session title<input id="nt" placeholder="Session 1: The roadside ambush"></label>
+<label style="margin-top:8px">Notes<textarea id="nb" rows="4"></textarea></label>
+<div class="row" style="margin-top:8px"><button class="btn" data-act="addn">Save note</button></div>
+</div>
+<div id="nlist" class="card"></div>
+<h2>Quest log</h2>
+<div class="card">
+<div class="row"><label>New quest<input id="qt" placeholder="Find the missing caravan"></label><button class="btn" data-act="addq">Add quest</button></div>
+<div id="qlist"></div>
+</div>
+</section>
+<section id="tools">
+<h2>Generators</h2>
+<div class="card"><div class="row"><button class="btn" data-gen="npc">NPC</button><button class="btn" data-gen="loot">Loot</button><button class="btn" data-gen="tav">Tavern</button></div><div id="gen" style="font-size:1.1rem">Tap a button to generate.</div></div>
+<h2>Monster library</h2>
+<div class="card"><label>Search<input id="msr" placeholder="goblin"></label><div id="mlist" style="margin-top:8px"></div><div id="monmsg" class="mu"></div></div>
+<h2>Backup and transfer</h2>
+<div class="card"><p class="mu">Export your data here, copy it, then paste it on another device and tap Import.</p><textarea id="bk" rows="4"></textarea><div class="row" style="margin-top:8px"><button class="ghost" data-bk="out">Export</button><button class="btn" data-bk="in">Import</button></div></div>
+</section>
+</main>
+
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const KEY='table-companion-v1';
+let S={char:{name:'',cls:'',lvl:1,ab:{STR:10,DEX:10,CON:10,INT:10,WIS:10,CHA:10},hp:10,max:10,ac:10,spd:30,inv:'',spells:''},init:{round:1,turn:0,list:[]},notes:[],quests:[],hist:[]};
+try{const r=localStorage.getItem(KEY);if(r){const p=JSON.parse(r);S=Object.assign(S,p);S.char=Object.assign(S.char,p.char||{})}}catch(e){}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}};
+const mod=v=>Math.floor((v-10)/2), fm=m=>(m>=0?'+':'')+m, pb=()=>2+Math.floor((S.char.lvl-1)/4);
+const d=n=>1+Math.floor(Math.random()*n);
+
+// Dice
+let die=20;
+$('#dgrid').innerHTML=[4,6,8,10,12,20,100].map(n=>`<button data-die="${n}" class="${n===20?'sel':''}">d${n}</button>`).join('');
+function show(total,detail,label){
+  $('#res').textContent=total;$('#resd').textContent=detail;
+  S.hist.unshift(`${label}: ${total} (${detail})`);S.hist=S.hist.slice(0,12);save();renderHist();
+}
+function rollDice(n,s,m,mode,label){
+  if(mode&&s===20){
+    const a=d(20),b=d(20),pick=mode==='adv'?Math.max(a,b):Math.min(a,b);
+    show(pick+m,`${a}, ${b} → ${pick}${m?' '+fm(m):''} (${mode==='adv'?'advantage':'disadvantage'})`,label||'d20');return pick+m;
+  }
+  const r=Array.from({length:n},()=>d(s)),sum=r.reduce((x,y)=>x+y,0);
+  show(sum+m,`${r.join(' + ')}${m?' '+fm(m):''}`,label||`${n}d${s}`);return sum+m;
+}
+function renderHist(){$('#hist').innerHTML=S.hist.length?S.hist.map(h=>`<div>${esc(h)}</div>`).join(''):'<span class="mu">No rolls yet.</span>'}
+
+// Character
+function renderChar(){
+  const c=S.char;
+  $('#char').innerHTML=`<div class="card"><div class="row">
+  <label>Name<input data-c="name" value="${esc(c.name)}"></label>
+  <label>Class<input data-c="cls" value="${esc(c.cls)}"></label>
+  <label style="max-width:90px;min-width:80px">Level<input type="number" min="1" max="20" data-c="lvl" value="${c.lvl}"></label></div>
+  <span class="mu">Proficiency bonus </span><b id="pb">${fm(pb())}</b></div>
+  <h2>Abilities</h2><div class="abs">${Object.keys(c.ab).map(k=>`<div class="ab"><span>${k}</span><input type="number" data-a="${k}" value="${c.ab[k]}"><b id="m${k}">${fm(mod(c.ab[k]))}</b><button class="ghost" data-chk="${k}">Roll ${k} check</button></div>`).join('')}</div>
+  <div class="mu" id="chkres" style="margin-top:6px;min-height:1.4em"></div>
+  <h2>Health and defense</h2><div class="card">
+  <div class="hpb"><label style="min-width:70px">HP<input type="number" data-c="hp" value="${c.hp}"></label><label style="min-width:70px">Max HP<input type="number" data-c="max" value="${c.max}"></label>
+  <label style="min-width:70px">AC<input type="number" data-c="ac" value="${c.ac}"></label><label style="min-width:70px">Speed<input type="number" data-c="spd" value="${c.spd}"></label></div>
+  <div class="hpb" style="margin-top:10px">${[-5,-1,1,5].map(n=>`<button class="ghost" data-hp="${n}">${n>0?'+':''}${n} HP</button>`).join('')}<button class="ghost" data-act="rest">Long rest</button></div></div>
+  <h2>Inventory</h2><textarea rows="5" data-c="inv" placeholder="Longsword, 50 ft rope, 12 gp…">${esc(c.inv)}</textarea>
+  <h2>Spells and features</h2><textarea rows="5" data-c="spells">${esc(c.spells)}</textarea>`;
+}
+
+// Combat
+function renderCombat(){
+  const I=S.init;I.list.sort((a,b)=>b.i-a.i);
+  if(I.turn>=I.list.length)I.turn=0;
+  $('#rnd').textContent='Round '+I.round;
+  $('#clist').innerHTML=I.list.length?I.list.map((x,n)=>`<div class="it ${n===I.turn?'cur':''}">
+  <div class="nm">${esc(x.n)}<div class="mu" style="font-weight:400">Initiative ${x.i} · HP ${x.hp}${x.hp<=0?' · down':''}</div></div>
+  <input type="number" id="amt${n}" placeholder="Amt" aria-label="Amount for ${esc(x.n)}">
+  <button class="ghost" data-dmg="${n}">Damage</button><button class="ghost" data-heal="${n}">Heal</button>
+  <button class="danger" data-del="${n}" aria-label="Remove ${esc(x.n)}">✕</button></div>`).join(''):'<p class="mu">No one in the fight yet. Add combatants above.</p>';
+  save();
+}
+
+// Campaign
+function renderCamp(){
+  $('#nlist').innerHTML=S.notes.length?S.notes.map((n,i)=>`<details><summary>${esc(n.t||'Untitled')}</summary><p style="white-space:pre-wrap">${esc(n.b)}</p><button class="danger" data-deln="${i}">Delete note</button></details>`).join(''):'<span class="mu">No session notes yet.</span>';
+  $('#qlist').innerHTML=S.quests.length?S.quests.map((q,i)=>`<div class="q"><input type="checkbox" data-q="${i}" ${q.d?'checked':''} aria-label="Done"><span class="${q.d?'done':''}" style="flex:1">${esc(q.t)}</span><button class="danger" data-delq="${i}" aria-label="Delete quest">✕</button></div>`).join(''):'<span class="mu">No quests yet.</span>';
+  save();
+}
+
+// Events
+document.addEventListener('click',e=>{
+  const t=e.target.closest('button');if(!t)return;const D=t.dataset;
+  if(D.tab){document.querySelectorAll('nav button').forEach(b=>b.setAttribute('aria-selected',b===t));document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===D.tab));return}
+  if(D.die){die=+D.die;document.querySelectorAll('#dgrid button').forEach(b=>b.classList.toggle('sel',b===t));return}
+  if(D.chk){const k=D.chk,m=mod(S.char.ab[k]);const r=rollDice(1,20,m,null,k+' check');$('#chkres').textContent=`${k} check: ${r}`;return}
+  if(D.hp){const c=S.char;c.hp=Math.max(0,Math.min(c.max,c.hp+ +D.hp));document.querySelector('[data-c=hp]').value=c.hp;save();return}
+  if(D.dmg!==undefined||D.heal!==undefined){const n=+(D.dmg??D.heal),a=Math.abs(+$('#amt'+n).value||0),x=S.init.list[n];x.hp+=D.dmg!==undefined?-a:a;renderCombat();return}
+  if(D.del){S.init.list.splice(+D.del,1);renderCombat();return}
+  if(D.deln){S.notes.splice(+D.deln,1);renderCamp();return}
+  if(D.delq){S.quests.splice(+D.delq,1);renderCamp();return}
+  switch(D.act){
+    case'roll':rollDice(Math.max(1,Math.min(20,+$('#dn').value||1)),die,+$('#dm').value||0);break;
+    case'adv':case'dis':rollDice(1,20,+$('#dm').value||0,D.act);break;
+    case'rest':S.char.hp=S.char.max;renderChar();save();break;
+    case'addc':{const n=$('#cn').value.trim();if(!n)return;S.init.list.push({n,i:+$('#ci').value||0,hp:+$('#ch').value||0});$('#cn').value=$('#ci').value=$('#ch').value='';renderCombat();break}
+    case'rollinit':$('#ci').value=d(20);break;
+    case'next':if(S.init.list.length){S.init.turn++;if(S.init.turn>=S.init.list.length){S.init.turn=0;S.init.round++}}renderCombat();break;
+    case'resetc':S.init={round:1,turn:0,list:[]};renderCombat();break;
+    case'addn':{const b=$('#nb').value.trim(),n=$('#nt').value.trim();if(!b&&!n)return;S.notes.unshift({t:n,b});$('#nt').value=$('#nb').value='';renderCamp();break}
+    case'addq':{const q=$('#qt').value.trim();if(!q)return;S.quests.push({t:q,d:false});$('#qt').value='';renderCamp();break}
+  }
+});
+document.addEventListener('change',e=>{if(e.target.dataset.q!==undefined){S.quests[+e.target.dataset.q].d=e.target.checked;renderCamp()}});
+document.addEventListener('input',e=>{
+  const t=e.target,c=S.char;
+  if(t.dataset.a){c.ab[t.dataset.a]=+t.value||0;$('#m'+t.dataset.a).textContent=fm(mod(c.ab[t.dataset.a]));save()}
+  else if(t.dataset.c){const k=t.dataset.c;c[k]=t.type==='number'?(+t.value||0):t.value;
+    if(k==='lvl'){c.lvl=Math.max(1,Math.min(20,c.lvl||1));$('#pb').textContent=fm(pb())}save()}
+});
+// Tools
+const L=s=>s.split(','),pick=a=>a[Math.floor(Math.random()*a.length)];
+const FN=L('Aldric,Brenna,Corin,Dara,Eldon,Fenna,Garrick,Hilda,Isolde,Joren,Kaela,Lorcan,Maren,Nyx,Orrin,Petra,Quill,Rhea,Soren,Tamsin'),LN=L('Ashford,Blackwood,Cinderfall,Dunmere,Evenstar,Frostmantle,Greyhollow,Ironvale,Thornwick,Underhill'),TR=L('gruff,cheerful,suspicious,nervous,pompous,soft-spoken,greedy,devout,curious,world-weary'),RC=L('human,elf,dwarf,halfling,gnome,half-orc,tiefling,dragonborn'),JB=L('blacksmith,innkeeper,merchant,guard captain,herbalist,priest,thief,scholar,ferryman,farmer'),QK=L('never makes eye contact,hums constantly,collects teeth,speaks in proverbs,is terrified of cats,overtips,quotes a long-dead hero,keeps a pet crow'),WT=L('revenge on a rival,safe passage out of town,to find a lost sibling,a rare book,quick gold,to keep a dark secret hidden'),LT=L('a silver ring that glows near undead,a potion of healing,a rusted key with no lock,a map to a nearby ruin,a pouch of 40 gold pieces,a dagger with a ruby pommel,a scroll with one unknown spell,a cracked crystal ball,a set of masterwork thieves’ tools,a mysterious egg wrapped in cloth'),T1=L('Gilded,Drunken,Sleeping,Rusty,Laughing,Crimson,Silver,Broken'),T2=L('Dragon,Goblet,Anvil,Stag,Lantern,Raven,Barrel,Crown');
+const GEN={npc:()=>`${pick(FN)} ${pick(LN)}, a ${pick(TR)} ${pick(RC)} ${pick(JB)}. Quirk: ${pick(QK)}. Wants: ${pick(WT)}.`,loot:()=>`You find ${pick(LT)}.`,tav:()=>`The ${pick(T1)} ${pick(T2)}`};
+const MON=[['Goblin','1/4',7,15,'Scimitar +4, 1d6+2'],['Wolf','1/4',11,13,'Bite +4, 2d4+2, pack tactics'],['Skeleton','1/4',13,13,'Shortsword +4, 1d6+2'],['Zombie','1/4',22,8,'Slam +3, 1d6+1, hard to put down'],['Bandit','1/8',11,12,'Scimitar +3, 1d6+1'],['Orc','1/2',15,13,'Greataxe +5, 1d12+3'],['Giant Spider','1',26,14,'Bite +5, poison, webs'],['Ogre','2',59,11,'Greatclub +6, 2d8+4'],['Owlbear','3',59,13,'Beak and claws, multiattack'],['Troll','5',84,15,'Regenerates, multiattack'],['Wyvern','6',110,13,'Bite and poison stinger']];
+function renderMon(){const q=$('#msr').value.toLowerCase();$('#mlist').innerHTML=MON.map((m,i)=>m[0].toLowerCase().includes(q)?`<div class="it"><div class="nm">${m[0]}<div class="mu" style="font-weight:400">CR ${m[1]} · HP ${m[2]} · AC ${m[3]} · ${m[4]}</div></div><button class="ghost" data-mon="${i}">Add to combat</button></div>`:'').join('')}
+document.addEventListener('click',e=>{const t=e.target.closest('button');if(!t)return;const D=t.dataset;
+ if(D.gen){$('#gen').textContent=GEN[D.gen]()}
+ else if(D.mon!==undefined){const m=MON[+D.mon],n=S.init.list.filter(x=>x.n.startsWith(m[0])).length+1;S.init.list.push({n:`${m[0]} ${n}`,i:d(20),hp:m[2]});renderCombat();$('#monmsg').textContent=`${m[0]} ${n} added to the Combat tab.`}
+ else if(D.bk==='out'){$('#bk').value=JSON.stringify(S)}
+ else if(D.bk==='in'){try{const p=JSON.parse($('#bk').value);S=Object.assign(S,p);save();renderChar();renderCombat();renderCamp();renderHist();$('#bk').value='Imported.'}catch(err){$('#bk').value='That doesn’t look like exported data.'}}
+});
+$('#msr').addEventListener('input',renderMon);
+renderChar();renderCombat();renderCamp();renderHist();renderMon();
+</script>
+</body>
+</html>
