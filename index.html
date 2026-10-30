@@ -130,7 +130,6 @@ select:focus-visible{outline:2px solid var(--ac);outline-offset:1px}
 </section>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -240,43 +239,117 @@ document.addEventListener('click',e=>{const t=e.target.closest('button');if(!t)r
 });
 $('#msr').addEventListener('input',renderMon);
 
-// Party: one person hosts, others join with a code. Live data goes browser to browser.
+// Party: the host runs server.js on their PC. Friends use this page (or the host's own link)
+// and connect to that server, usually through an invite link that carries the server address.
 const PARTY=window.PARTY=(()=>{
-  const AL='ABCDEFGHJKMNPQRSTUVWXYZ23456789',PFX='tcdnd-',MAXP=8;
-  let mode='idle',peer=null,code='',conns=new Map(),roster={},hostConn=null,view=null,msg='',timer=null,joinTimer=null,draft='',lock=null,feed=[],rl={n:1,s:20,m:0,k:'n'},pend=false,lastRoll=new Map();
   const SIDES=[4,6,8,10,12,20,100];
+  let mode='idle',avail=null,view=null,msg='',timer=null,draft='',token='',hostKey='',pend=false,cr=false,gen=0,base='',rl={n:1,s:20,m:0,k:'n'};
+  const okBase=s=>/^(https:\/\/[a-z0-9.-]+|http:\/\/(localhost|127\.0\.0\.1))(:\d{1,5})?$/i.test(s);
   try{draft=localStorage.getItem('tc-code')||''}catch(e){}
+  try{
+    const u=new URL(location.href),k=u.searchParams.get('host');
+    if(k){hostKey=k.slice(0,80);u.searchParams.delete('host');history.replaceState(null,'',u.pathname+u.search+u.hash);try{sessionStorage.setItem('tc-hk',hostKey)}catch(e){}}
+    else{try{hostKey=sessionStorage.getItem('tc-hk')||''}catch(e){}}
+  }catch(e){}
+  try{
+    // an invite link looks like  page#s=<server address>&c=<party code>
+    const h=new URLSearchParams(location.hash.replace(/^#/,'')),s=(h.get('s')||'').replace(/\/+$/,''),c=h.get('c')||'';
+    if(!hostKey){
+      if(okBase(s)){base=s;try{localStorage.setItem('tc-srv',s)}catch(e){}}
+      else{try{const st=localStorage.getItem('tc-srv')||'';if(okBase(st))base=st}catch(e){}}
+    }
+    if(/^[A-Za-z0-9]{5}$/.test(c))draft=c.toUpperCase();
+    if(h.has('s')||h.has('c'))history.replaceState(null,'',location.pathname+location.search);
+  }catch(e){}
   const cl=(s,n)=>String(s==null?'':s).slice(0,n);
   const num=(v,lo,hi)=>Math.max(lo,Math.min(hi,Math.round(+v||0)));
   const arr=a=>Array.isArray(a)?a:[];
-  const mk=o=>window.TC_PEER_OPTS?[o,window.TC_PEER_OPTS]:[o];
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   const info=m=>({name:cl(m.name,30)||'Adventurer',cls:cl(m.cls,30),lvl:num(m.lvl,1,20),hp:num(m.hp,-999,9999),max:num(m.max,0,9999),ac:num(m.ac,0,99)});
   const mine=()=>info(S.char);
   const say=t=>{msg=t;render()};
-  function hostView(){
-    return {code,feed:feed.slice(0,30),round:num(S.init.round,1,9999),turn:num(S.init.turn,0,999),
-      init:S.init.list.map(x=>({n:cl(x.n,40),i:num(x.i,-99,99),down:x.hp<=0})),
-      roster:Object.values(roster),
-      quests:S.quests.filter(q=>q.sh).map(q=>({t:cl(q.t,200),d:!!q.d})),
-      notes:S.notes.filter(n=>n.sh).map(n=>({t:cl(n.t,100),b:cl(n.b,3000)}))};
+  const where=()=>{try{return base?new URL(base).host:''}catch(e){return ''}};
+  async function api(p,body){
+    const r=await fetch(base+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    let j={};try{j=await r.json()}catch(e){}
+    if(!r.ok)throw Object.assign(new Error(j.error||'Request failed.'),{status:r.status});
+    return j;
   }
-  function clean(m){
-    return {code:cl(m.code,8),feed:arr(m.feed).slice(0,30).map(x=>({w:cl(x&&x.w,30),t:cl(x&&x.t,140)})),round:num(m.round,1,9999),turn:num(m.turn,0,999),
+  const shared=()=>({who:cl(S.char.name,30),round:num(S.init.round,1,9999),turn:num(S.init.turn,0,999),
+    init:S.init.list.map(x=>({n:cl(x.n,40),i:num(x.i,-99,99),down:x.hp<=0})),
+    quests:S.quests.filter(q=>q.sh).map(q=>({t:cl(q.t,200),d:!!q.d})),
+    notes:S.notes.filter(n=>n.sh).map(n=>({t:cl(n.t,100),b:cl(n.b,3000)}))});
+  function clean(m,isHost){
+    m=m&&typeof m==='object'?m:{};
+    const o={code:cl(m.code,8),round:num(m.round,1,9999),turn:num(m.turn,0,999),
+      feed:arr(m.feed).slice(0,30).map(x=>({w:cl(x&&x.w,30),t:cl(x&&x.t,140),hid:isHost&&!!(x&&x.hid)})),
       init:arr(m.init).slice(0,60).map(x=>({n:cl(x&&x.n,40),i:num(x&&x.i,-99,99),down:!!(x&&x.down)})),
-      roster:arr(m.roster).slice(0,MAXP+4).map(x=>Object.assign({id:cl(x&&x.id,80),on:!(x&&x.on===false)},info(x||{}))),
+      roster:arr(m.roster).slice(0,16).map(x=>Object.assign({id:isHost?cl(x&&x.id,40):'',on:!(x&&x.on===false)},info(x||{}))),
       quests:arr(m.quests).slice(0,60).map(x=>({t:cl(x&&x.t,200),d:!!(x&&x.d)})),
       notes:arr(m.notes).slice(0,60).map(x=>({t:cl(x&&x.t,100),b:cl(x&&x.b,3000)}))};
+    if(isHost){o.site=cl(m.site,300);o.publicUrl=okBase(cl(m.publicUrl,200))?cl(m.publicUrl,200):''}
+    return o;
   }
-  function roll(who,n,s,m,k,hid){
-    n=num(n,1,20);s=SIDES.includes(+s)?+s:20;m=num(m,-99,99);
-    const two=(k==='a'||k==='d')&&s===20;
-    const rs=Array.from({length:two?2:n},()=>d(s));
-    let tot,det,lab;
-    if(two){const p=k==='a'?Math.max(...rs):Math.min(...rs);tot=p+m;det=rs.join(', ')+' → '+p;lab='d20 '+(k==='a'?'advantage':'disadvantage')}
-    else{tot=rs.reduce((a,b)=>a+b,0)+m;det=rs.join(' + ');lab=n+'d'+s}
-    feed.unshift({w:cl(who,30)||'Someone',t:lab+(m?(m>0?'+':'')+m:'')+': '+tot+' ('+det+')',hid:!!hid});
-    feed.length=Math.min(feed.length,30);
-    push();
+  const stopLoop=()=>{gen++};
+  function queue(){
+    if(mode==='idle')return;
+    clearTimeout(timer);
+    timer=setTimeout(()=>{
+      if(mode==='host')api('/api/host/state',Object.assign({key:hostKey},shared())).catch(()=>{});
+      else if(mode==='player')api('/api/upd',Object.assign({token},mine())).catch(()=>{});
+    },200);
+  }
+  function dead(kind){
+    if(kind==='host'){stopLoop();mode='idle';view=null;hostKey='';try{sessionStorage.removeItem('tc-hk')}catch(e){}msg='The server did not accept this host link. Start the server again and use the link it opens.';render()}
+    else leave('You were disconnected from the party. Join again.');
+  }
+  // Live updates: ask the server for news; it answers as soon as something changes (or after ~25s).
+  async function loop(kind){
+    const my=++gen;let v=0,fail=0,pushed=false;
+    while(my===gen){
+      try{
+        if(kind==='host'&&!pushed){await api('/api/host/state',Object.assign({key:hostKey},shared()));pushed=true}
+        const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),45000);
+        const url=kind==='host'?'/api/host/poll?key='+encodeURIComponent(hostKey)+'&v='+v:'/api/poll?token='+encodeURIComponent(token)+'&v='+v;
+        let r;try{r=await fetch(base+url,{cache:'no-store',signal:ctl.signal})}finally{clearTimeout(tm)}
+        if(my!==gen)return;
+        if(r.status===401){dead(kind);return}
+        if(!r.ok)throw new Error('http '+r.status);
+        const j=await r.json();
+        if(my!==gen)return;
+        if(fail){fail=0;pushed=false}
+        if(j.kicked){leave(j.kicked==='kicked'?'The host removed you from the party.':j.kicked==='reset'?'The host started a new party. Ask for the new code.':'');return}
+        if(j.state){v=j.v;view=clean(j.state,kind==='host');msg='';render()}
+      }catch(e){
+        if(my!==gen)return;
+        if(e&&e.status===401){dead(kind);return}
+        fail++;msg=kind==='host'?'Reconnecting to your server…':'Reconnecting…';render();
+        await sleep(Math.min(1000*fail,5000));
+      }
+    }
+  }
+  function startHost(){mode='host';view=null;msg='Connecting to your server…';render();loop('host')}
+  async function join(raw){
+    const c=cl(raw,12).toUpperCase().replace(/[^A-Z0-9]/g,'');
+    draft=c;
+    if(c.length!==5){say('Enter the 5-character party code.');return}
+    if(!S.char.name.trim()){say('Give your character a name on the Character tab first.');return}
+    msg='Joining…';render();
+    try{
+      const j=await api('/api/join',Object.assign({code:c},mine()));
+      token=j.token;mode='player';view=null;
+      try{localStorage.setItem('tc-code',c)}catch(e){}
+      msg='Connecting…';render();loop('player');
+    }catch(e){say(e.status?e.message:'Could not reach the host\'s server. Check the invite link, or ask the host if the server is still running.')}
+  }
+  function leave(text){
+    stopLoop();
+    if(token){api('/api/leave',{token}).catch(()=>{})}
+    token='';mode='idle';view=null;msg=text||'';render();
+  }
+  function ping(){
+    avail=null;render();
+    fetch(base+'/api/ping',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(j=>{avail=!!(j&&j.ok);if(avail&&hostKey&&!base)startHost();else render()}).catch(()=>{avail=false;render()});
   }
   function readRl(){
     const g=id=>document.getElementById(id);
@@ -285,108 +358,14 @@ const PARTY=window.PARTY=(()=>{
     if(g('rm'))rl.m=num(g('rm').value,-99,99);
     if(g('rk'))rl.k=['n','a','d'].includes(g('rk').value)?g('rk').value:'n';
   }
-  function push(){
-    view=hostView();
-    const s=Object.assign({t:'state'},view,{roster:view.roster.map(({id,...r})=>r),feed:view.feed.filter(x=>!x.hid)});
-    conns.forEach(c=>{try{c.send(s)}catch(e){}});
-    render();
+  function rollCard(isHost){
+    const o=SIDES.map(s=>`<option value="${s}" ${rl.s===s?'selected':''}>d${s}</option>`).join('');
+    const kk=[['n','Normal'],['a','Advantage (d20)'],['d','Disadvantage (d20)']].map(x=>`<option value="${x[0]}" ${rl.k===x[0]?'selected':''}>${x[1]}</option>`).join('');
+    return `<h2>Dice</h2><div class="card"><div class="row"><label>How many<input id="rn" type="number" min="1" max="20" value="${rl.n}"></label><label>Die<select id="rs">${o}</select></label><label>Modifier<input id="rm" type="number" value="${rl.m}"></label><label>Type<select id="rk">${kk}</select></label></div><div class="row" style="margin:0"><button class="btn" data-pty="roll">Roll for the party</button>${isHost?'<button class="ghost" data-pty="rollh">Roll hidden (only you see it)</button>':''}</div></div>`;
   }
-  function queue(){
-    if(mode==='idle')return;
-    clearTimeout(timer);
-    timer=setTimeout(()=>{
-      if(mode==='host')push();
-      else if(mode==='player'&&hostConn&&hostConn.open){try{hostConn.send(Object.assign({t:'upd'},mine()))}catch(e){}}
-    },200);
+  function feedHtml(v){
+    return `<h2>Rolls</h2><div class="card" id="pfeed">${v.feed.length?v.feed.map(x=>`<div class="fd"><b>${esc(x.w)}</b> ${esc(x.t)}${x.hid?' <span class="mu">(hidden)</span>':''}</div>`).join(''):'<span class="mu">No rolls yet. Rolls from everyone show up here.</span>'}</div>`;
   }
-  function needLib(){
-    if(window.Peer)return false;
-    say('The connection library did not load. Check your internet connection and reload the page.');return true;
-  }
-  async function keepAwake(){try{if(navigator.wakeLock&&mode==='host'&&!lock){lock=await navigator.wakeLock.request('screen');lock.addEventListener('release',()=>{lock=null})}}catch(e){}}
-  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')keepAwake()});
-  function stop(silent){
-    clearTimeout(timer);clearTimeout(joinTimer);
-    conns.forEach(c=>{try{c.close()}catch(e){}});conns=new Map();roster={};feed=[];lastRoll=new Map();pend=false;
-    try{hostConn&&hostConn.close()}catch(e){}hostConn=null;
-    try{peer&&peer.destroy()}catch(e){}peer=null;
-    try{lock&&lock.release()}catch(e){}lock=null;
-    mode='idle';view=null;code='';
-    if(!silent){msg='';render()}
-  }
-  function host(){
-    if(needLib())return;
-    stop(true);mode='host';msg='Starting…';open(0);keepAwake();
-  }
-  function open(n){
-    code=Array.from({length:5},()=>AL[Math.floor(Math.random()*AL.length)]).join('');
-    const p=peer=new Peer(PFX+code,...mk({}).slice(1));
-    p.on('open',()=>{if(peer!==p)return;msg='';view=hostView();render()});
-    p.on('connection',onConn);
-    p.on('disconnected',()=>{try{p.reconnect()}catch(e){}});
-    p.on('error',e=>{
-      if(peer!==p)return;
-      if(e.type==='unavailable-id'&&n<4){try{p.destroy()}catch(_){}open(n+1);return}
-      if(e.type==='network'||e.type==='disconnected'||e.type==='socket-error'||e.type==='socket-closed'){msg='Connection to the matchmaking server was interrupted. Players already connected stay connected.';render();return}
-      msg='Connection problem ('+(e.type||'unknown')+'). Stop hosting and try again.';render();
-    });
-    render();
-  }
-  function onConn(c){
-    c.on('data',m=>{
-      if(mode!=='host'||!m||typeof m!=='object')return;
-      if(m.t==='roll'){
-        if(!roster[c.peer])return;
-        const now=Date.now();if(now-(lastRoll.get(c.peer)||0)<400)return;lastRoll.set(c.peer,now);
-        roll(roster[c.peer].name,m.n,m.s,m.m,m.k==='a'||m.k==='d'?m.k:'n',false);return;
-      }
-      if(m.t!=='hello'&&m.t!=='upd')return;
-      const i=info(m);
-      if(m.t==='hello'){
-        Object.keys(roster).forEach(k=>{if(!roster[k].on&&roster[k].name===i.name)delete roster[k]});
-        if(!roster[c.peer]&&Object.keys(roster).length>=MAXP){try{c.send({t:'full'})}catch(e){}setTimeout(()=>{try{c.close()}catch(e){}},300);return}
-      }
-      if(!roster[c.peer]&&m.t==='upd')return;
-      roster[c.peer]=Object.assign({id:c.peer,on:true},i);
-      conns.set(c.peer,c);
-      push();
-    });
-    c.on('close',()=>{conns.delete(c.peer);if(roster[c.peer])roster[c.peer].on=false;if(mode==='host')push()});
-    c.on('error',()=>{});
-  }
-  function kick(id){
-    const c=conns.get(id);try{c&&c.close()}catch(e){}
-    conns.delete(id);delete roster[id];push();
-  }
-  function join(raw){
-    const c=cl(raw,12).toUpperCase().replace(/[^A-Z0-9]/g,'');
-    draft=c;
-    if(c.length!==5){say('Enter the 5-character party code.');return}
-    if(!S.char.name.trim()){say('Give your character a name on the Character tab first.');return}
-    if(needLib())return;
-    stop(true);mode='player';code=c;msg='Connecting…';
-    const p=peer=new Peer(...mk(undefined));
-    p.on('open',()=>{
-      if(peer!==p)return;
-      const hc=hostConn=p.connect(PFX+c,{reliable:true});
-      hc.on('open',()=>{try{hc.send(Object.assign({t:'hello'},mine()))}catch(e){}try{localStorage.setItem('tc-code',c)}catch(e){}});
-      hc.on('data',m=>{
-        if(!m||typeof m!=='object')return;
-        if(m.t==='state'){clearTimeout(joinTimer);view=clean(m);msg='';render()}
-        else if(m.t==='full'){leave('This party is full.')}
-      });
-      hc.on('close',()=>{if(mode==='player'&&hostConn===hc){hostConn=null;msg='You were disconnected from the party.';render()}});
-      hc.on('error',()=>{});
-    });
-    p.on('error',e=>{
-      if(peer!==p)return;
-      leave(e.type==='peer-unavailable'?'No party found with that code. Check it and try again.':'Connection problem ('+(e.type||'unknown')+'). Try again.');
-    });
-    clearTimeout(joinTimer);
-    joinTimer=setTimeout(()=>{if(mode==='player'&&!view)leave('Could not reach the party. Check the code and your internet connection.')},12000);
-    render();
-  }
-  function leave(text){stop(true);msg=text||'';render()}
   function bodyShared(v,isHost){
     const tn=v.init.length?v.turn%v.init.length:0;
     const ro=v.roster.length?v.roster.map(r=>{
@@ -398,13 +377,11 @@ const PARTY=window.PARTY=(()=>{
     const ns=v.notes.length?v.notes.map(n=>`<details><summary>${esc(n.t||'Untitled')}</summary><p style="white-space:pre-wrap">${esc(n.b)}</p></details>`).join(''):'<p class="mu">Nothing shared yet.</p>';
     return rollCard(isHost)+feedHtml(v)+`<h2>Party</h2>${ro}<h2>Turn order · round ${v.round}</h2>${ini}<h2>Quests</h2><div class="card">${qs}</div><h2>${isHost?'Shared notes':'Notes from the host'}</h2><div class="card">${ns}</div>`;
   }
-  function rollCard(isHost){
-    const o=SIDES.map(s=>`<option value="${s}" ${rl.s===s?'selected':''}>d${s}</option>`).join('');
-    const kk=[['n','Normal'],['a','Advantage (d20)'],['d','Disadvantage (d20)']].map(x=>`<option value="${x[0]}" ${rl.k===x[0]?'selected':''}>${x[1]}</option>`).join('');
-    return `<h2>Dice</h2><div class="card"><div class="row"><label>How many<input id="rn" type="number" min="1" max="20" value="${rl.n}"></label><label>Die<select id="rs">${o}</select></label><label>Modifier<input id="rm" type="number" value="${rl.m}"></label><label>Type<select id="rk">${kk}</select></label></div><div class="row" style="margin:0"><button class="btn" data-pty="roll">Roll for the party</button>${isHost?'<button class="ghost" data-pty="rollh">Roll hidden (only you see it)</button>':''}</div></div>`;
-  }
-  function feedHtml(v){
-    return `<h2>Rolls</h2><div class="card" id="pfeed">${v.feed.length?v.feed.map(x=>`<div class="fd"><b>${esc(x.w)}</b> ${esc(x.t)}${x.hid?' <span class="mu">(hidden)</span>':''}</div>`).join(''):'<span class="mu">No rolls yet. Rolls from everyone show up here.</span>'}</div>`;
+  const inviteLink=v=>v&&v.publicUrl&&v.site?v.site+'#s='+encodeURIComponent(v.publicUrl)+'&c='+v.code:'';
+  function inviteCard(v){
+    const l=inviteLink(v);
+    if(l)return `<div class="card"><h2 style="margin-top:0">Invite link</h2><p class="mu">Send this to your friends. It opens the website and fills in your server and the party code.</p><input id="inv" readonly value="${esc(l)}" aria-label="Invite link"><div class="row" style="margin:8px 0 0"><button class="btn" data-pty="copyinv">Copy invite link</button><button class="ghost" data-pty="clearpub">Change public link</button></div></div>`;
+    return `<div class="card"><h2 style="margin-top:0">Public link</h2><p class="mu">Friends can't reach your PC yet. If you have cloudflared installed, start.bat opens a free tunnel and the invite link appears here by itself. Otherwise, run any tunnel and paste its https link here.</p><div class="row" style="margin:0"><label>Public https link<input id="purl" placeholder="https://something.trycloudflare.com" autocomplete="off" spellcheck="false"></label><button class="btn" data-pty="savepub">Save</button></div></div>`;
   }
   function render(){
     const el=document.getElementById('party');if(!el)return;
@@ -413,34 +390,53 @@ const PARTY=window.PARTY=(()=>{
     pend=false;
     const st=msg?`<div class="mu" role="status" style="margin:8px 0">${esc(msg)}</div>`:'';
     if(mode==='idle'){
-      el.innerHTML=`<div class="card"><h2 style="margin-top:0">Host a party</h2><p class="mu">You run the game. Players join with a code and see party health, the turn order, and the quests and notes you choose to share. Keep this page open while you play.</p><button class="btn" data-pty="host">Start hosting</button></div>
-      <div class="card"><h2 style="margin-top:0">Join a party</h2><p class="mu">Your character's name, class, HP and AC are shared with the party.</p><div class="row"><label>Party code<input id="pcode" maxlength="5" autocapitalize="characters" autocomplete="off" spellcheck="false" value="${esc(draft)}"></label><button class="btn" data-pty="join">Join</button></div></div>${st}`;
+      if(avail===null){el.innerHTML='<p class="mu">Checking for the party server…</p>'}
+      else if(!avail){
+        el.innerHTML=base
+          ?`<div class="card"><h2 style="margin-top:0">Can't reach the host</h2><p class="mu">The server at <b>${esc(where())}</b> did not answer. The host may have stopped it, or their link changed. Ask them for a new invite link.</p><button class="ghost" data-pty="forget">Forget this server</button></div>${st}`
+          :`<div class="card"><h2 style="margin-top:0">Party play</h2><p class="mu">Parties run on the host's own computer. Players: open the invite link your host sent you. Hosts: run <b>start.bat</b> from your DND folder and use the host link it opens.</p></div>${st}`;
+      }else{
+        el.innerHTML=`<div class="card"><h2 style="margin-top:0">Join a party</h2>${base?`<p class="mu">Host's server: <b>${esc(where())}</b></p>`:''}<p class="mu">Your character's name, class, HP and AC are shared with the party.</p><div class="row"><label>Party code<input id="pcode" maxlength="5" autocapitalize="characters" autocomplete="off" spellcheck="false" value="${esc(draft)}"></label><button class="btn" data-pty="join">Join</button></div>${base?'<button class="ghost" data-pty="forget">Use a different server</button>':''}</div>${st}`;
+      }
     }else if(mode==='host'){
-      el.innerHTML=`<div class="card"><div class="mu" style="text-align:center">Party code</div><div class="pcode" id="pshow">${esc(code)}</div><div class="row" style="justify-content:center"><button class="ghost" data-pty="copy">Copy code</button><button class="danger" data-pty="stop">Stop hosting</button></div><p class="mu" style="text-align:center;margin:0">Players enter this code on the Party tab. Turn order shows names only, never monster health. Share quests and notes from the Campaign tab.</p></div>${st}${view?bodyShared(view,true):''}`;
+      el.innerHTML=`<div class="card"><div class="mu" style="text-align:center">Party code</div><div class="pcode" id="pshow">${esc(view?view.code:'…')}</div><div class="row" style="justify-content:center"><button class="ghost" data-pty="copy">Copy code</button><button class="ghost" data-pty="reset">${cr?'Tap again to remove everyone':'New code'}</button></div><p class="mu" style="text-align:center;margin:0">Turn order shows names only, never monster health. Share quests and notes from the Campaign tab. Closing the server window ends the party.</p></div>${view?inviteCard(view):''}${st}${view?bodyShared(view,true):''}`;
     }else{
-      el.innerHTML=`<div class="card"><div class="row" style="margin:0"><b style="flex:1">Party ${esc(code)}</b><button class="danger" data-pty="leave">Leave party</button></div></div>${st}${view?bodyShared(view,false):''}`;
+      el.innerHTML=`<div class="card"><div class="row" style="margin:0"><b style="flex:1">Party ${esc(view?view.code:'')}</b><button class="danger" data-pty="leave">Leave party</button></div></div>${st}${view?bodyShared(view,false):''}`;
     }
   }
-  document.addEventListener('click',e=>{
+  const copy=(text,done)=>{try{navigator.clipboard.writeText(text).then(()=>say(done),()=>say('Could not copy. Select it and copy by hand.'))}catch(err){say('Could not copy. Select it and copy by hand.')}};
+  document.addEventListener('click',async e=>{
     const t=e.target.closest('button');if(!t)return;const D=t.dataset;
     if(D.shq!==undefined){const q=S.quests[+D.shq];if(q){q.sh=!q.sh;renderCamp()}return}
     if(D.shn!==undefined){const n=S.notes[+D.shn];if(n){n.sh=!n.sh;renderCamp()}return}
     if(!D.pty)return;
-    if(D.pty==='host')host();
-    else if(D.pty==='join'){const i=document.getElementById('pcode');join(i?i.value:draft)}
-    else if(D.pty==='stop'||D.pty==='leave'){stop(false)}
-    else if(D.pty==='kick')kick(D.id);
+    const fail=err=>say(err.status?err.message:'Could not reach your server.');
+    if(D.pty==='join'){const i=document.getElementById('pcode');join(i?i.value:draft)}
+    else if(D.pty==='leave')leave('');
+    else if(D.pty==='forget'){base='';try{localStorage.removeItem('tc-srv')}catch(e){}msg='';ping()}
+    else if(D.pty==='kick'){try{await api('/api/host/kick',{key:hostKey,id:D.id})}catch(err){fail(err)}}
+    else if(D.pty==='reset'){
+      if(!cr){cr=true;render();setTimeout(()=>{if(cr){cr=false;render()}},4000);return}
+      cr=false;
+      try{await api('/api/host/reset',{key:hostKey});say('New code created.')}catch(err){fail(err)}
+    }
+    else if(D.pty==='copy')copy(view?view.code:'','Code copied.');
+    else if(D.pty==='copyinv')copy(inviteLink(view),'Invite link copied.');
+    else if(D.pty==='savepub'){const i=document.getElementById('purl');try{await api('/api/host/public',{key:hostKey,url:i?i.value:''});say('')}catch(err){fail(err)}}
+    else if(D.pty==='clearpub'){try{await api('/api/host/public',{key:hostKey,url:''});say('')}catch(err){fail(err)}}
     else if(D.pty==='roll'||D.pty==='rollh'){
       readRl();
-      if(mode==='host')roll(S.char.name.trim()||'Host',rl.n,rl.s,rl.m,rl.k,D.pty==='rollh');
-      else if(mode==='player'&&hostConn&&hostConn.open){try{hostConn.send({t:'roll',n:rl.n,s:rl.s,m:rl.m,k:rl.k})}catch(err){say('Could not send the roll. Try again.')}}
-      else say('You are not connected to the party.');
+      const b={n:rl.n,s:rl.s,m:rl.m,k:rl.k};
+      try{
+        if(mode==='host')await api('/api/host/roll',Object.assign({key:hostKey,who:S.char.name.trim()||'DM',hid:D.pty==='rollh'},b));
+        else if(mode==='player')await api('/api/roll',Object.assign({token},b));
+      }catch(err){fail(err)}
     }
-    else if(D.pty==='copy'){try{navigator.clipboard.writeText(code).then(()=>say('Code copied.'),()=>say('Could not copy. Select the code and copy it by hand.'))}catch(err){say('Could not copy. Select the code and copy it by hand.')}}
   });
   document.addEventListener('input',e=>{if(e.target.id==='pcode')draft=e.target.value});
   document.addEventListener('change',e=>{if(e.target.closest&&e.target.closest('#party'))readRl()});
   document.addEventListener('focusout',e=>{if(pend&&e.target.closest&&e.target.closest('#party'))setTimeout(render,0)});
+  ping();
   return {queue,render,get mode(){return mode}};
 })();
 renderChar();renderCombat();renderCamp();renderHist();renderMon();PARTY.render();
