@@ -81,7 +81,6 @@ let ground = [];            // items lying on the floor that anyone in the party
 let publicUrl = okUrl(String(process.env.PUBLIC_URL || '').replace(/\/+$/, '')) ? String(process.env.PUBLIC_URL).replace(/\/+$/, '') : '';
 let ver = 1;
 const hostWaiters = new Set();
-const ownerWaiters = new Set(); // owner spectators: see what the host sees, never listed as a player, can't be kicked
 const fails = [];
 
 function snap(isHost) {
@@ -106,9 +105,6 @@ function flush() {
   }
   for (const w of [...hostWaiters]) {
     if (w.v < ver) { clearTimeout(w.t); hostWaiters.delete(w); json(w.res, 200, { v: ver, state: fh }); }
-  }
-  for (const w of [...ownerWaiters]) {
-    if (w.v < ver) { clearTimeout(w.t); ownerWaiters.delete(w); json(w.res, 200, { v: ver, state: Object.assign({}, fh, { spectating: true }) }); }
   }
 }
 function changed() {
@@ -219,15 +215,6 @@ function hostPoll(req, res, u) {
   hostWaiters.add(w);
   res.on('close', () => { if (hostWaiters.delete(w)) clearTimeout(w.t); });
 }
-function ownerPoll(req, res, u) {
-  const acc = userFrom(u.searchParams.get('token') || '');
-  if (!acc || !acc.owner) return json(res, 401, { error: 'Owner only.' });
-  const v = num(u.searchParams.get('v'), 0, 1e9);
-  if (v < ver) return json(res, 200, { v: ver, state: Object.assign({}, snap(true), { spectating: true }) });
-  const w = { res, v, t: setTimeout(() => { ownerWaiters.delete(w); json(res, 200, { v, same: true }); }, HOLD) };
-  ownerWaiters.add(w);
-  res.on('close', () => { if (ownerWaiters.delete(w)) clearTimeout(w.t); });
-}
 
 const needHost = (b, res) => {
   if (same(b.key || '', hostKey)) return true;
@@ -332,37 +319,22 @@ const needAcct = (b, res) => {
   return u;
 };
 const chars = u => u.chars.map(x => ({ id: x.id, c: x.c }));
-// The account registered with this email is this server's permanent owner. It only ever applies
-// to servers this person runs themselves: nothing here reaches a server someone else hosts.
-const OWNER_EMAIL = 'dossee04@gmail.com';
-const OWNER_LOG = path.join(LOGDIR, 'owner-log.txt');
-const ownerLog = (who, msg) => { try { fs.appendFileSync(OWNER_LOG, new Date().toISOString().replace('T', ' ').slice(0, 19) + ' ' + who + ' ' + msg + '\n'); } catch (e) { /* ignore */ } };
-const needOwner = (b, res) => {
-  const u = userFrom(b.token);
-  if (!u || !u.owner) { json(res, 403, { error: 'Owner only.' }); return null; }
-  return u;
-};
-const ownerSnap = u => Object.assign({}, u, { chars: chars(u) });
 const DUMMY = crypto.randomBytes(16);
 
 const routes = {
   '/api/register': async (b, res) => {
     if (!checkCode(b, res)) return;
     const name = cl(b.user, 20).trim(), ln = name.toLowerCase(), pw = String(b.pass == null ? '' : b.pass);
-    const email = cl(b.email, 100).trim().toLowerCase();
     if (!/^[A-Za-z0-9_-]{3,20}$/.test(name)) return json(res, 400, { error: 'Username: 3 to 20 letters, numbers, - or _.' });
     if (pw.length < 8 || pw.length > 100) return json(res, 400, { error: 'Password must be 8 to 100 characters.' });
     if (Object.prototype.hasOwnProperty.call(accts, ln)) return json(res, 409, { error: 'That username is taken.' });
     if (Object.keys(accts).length >= MAXACC) return json(res, 409, { error: 'This host has reached its account limit.' });
     const salt = crypto.randomBytes(16), hash = await scrypt(pw, salt);
     if (Object.prototype.hasOwnProperty.call(accts, ln)) return json(res, 409, { error: 'That username is taken.' });
-    // the account registered with the server's owner email becomes the permanent owner of this server, forever
-    const owner = !!email && email === OWNER_EMAIL;
-    accts[ln] = { name, email, salt: salt.toString('base64'), hash: hash.toString('base64'), chars: [], made: Date.now(), owner };
+    accts[ln] = { name, salt: salt.toString('base64'), hash: hash.toString('base64'), chars: [], made: Date.now() };
     saveAccts();
-    logI('Account created: ' + name + (owner ? ' (owner)' : ''));
-    if (owner) ownerLog(name, 'became the server owner at registration');
-    json(res, 200, { token: mkToken(ln), user: name, owner });
+    logI('Account created: ' + name);
+    json(res, 200, { token: mkToken(ln), user: name });
   },
   '/api/login': async (b, res) => {
     if (!checkCode(b, res)) return;
@@ -378,9 +350,8 @@ const routes = {
       return json(res, 401, { error: 'Wrong username or password.' });
     }
     loginFails.delete(ln);
-    if (!u.owner && u.email && u.email === OWNER_EMAIL) { u.owner = true; saveAccts(); ownerLog(u.name, 'became the server owner on login (email match)'); }
-    logI('Login: ' + u.name + (u.owner ? ' (owner)' : ''));
-    json(res, 200, { token: mkToken(ln), user: u.name, chars: chars(u), owner: !!u.owner });
+    logI('Login: ' + u.name);
+    json(res, 200, { token: mkToken(ln), user: u.name, chars: chars(u) });
   },
   '/api/chars/list': (b, res) => {
     const u = needAcct(b, res); if (!u) return;
@@ -402,67 +373,6 @@ const routes = {
     u.chars = u.chars.filter(x => x.id !== cl(b.id, 40));
     saveAccts();
     json(res, 200, { chars: chars(u) });
-  },
-  // ---- owner: sees and manages every account on this server, and can watch any party without joining it ----
-  '/api/owner/accounts': (b, res) => {
-    const me = needOwner(b, res); if (!me) return;
-    const list = Object.keys(accts).sort().map(ln => { const a = accts[ln]; return { id: ln, name: a.name, email: a.email ? a.email.replace(/^(.).*(@.*)$/, '$1***$2') : '', owner: !!a.owner, chars: a.chars.length, made: a.made }; });
-    json(res, 200, { accounts: list });
-  },
-  '/api/owner/account': (b, res) => {
-    const me = needOwner(b, res); if (!me) return;
-    const ln = cl(b.user, 20).trim().toLowerCase();
-    const a = Object.prototype.hasOwnProperty.call(accts, ln) ? accts[ln] : null;
-    if (!a) return json(res, 404, { error: 'No such account.' });
-    json(res, 200, { name: a.name, owner: !!a.owner, chars: chars(a), made: a.made });
-  },
-  '/api/owner/resetpass': async (b, res) => {
-    const me = needOwner(b, res); if (!me) return;
-    const ln = cl(b.user, 20).trim().toLowerCase(), pw = String(b.pass == null ? '' : b.pass);
-    const a = Object.prototype.hasOwnProperty.call(accts, ln) ? accts[ln] : null;
-    if (!a) return json(res, 404, { error: 'No such account.' });
-    if (pw.length < 8 || pw.length > 100) return json(res, 400, { error: 'Password must be 8 to 100 characters.' });
-    const salt = crypto.randomBytes(16);
-    a.salt = salt.toString('base64'); a.hash = (await scrypt(pw, salt)).toString('base64');
-    saveAccts();
-    ownerLog(me.name, 'reset the password for ' + a.name);
-    logI('Owner ' + me.name + ' reset the password for ' + a.name);
-    json(res, 200, { ok: true });
-  },
-  '/api/owner/delaccount': (b, res) => {
-    const me = needOwner(b, res); if (!me) return;
-    const ln = cl(b.user, 20).trim().toLowerCase();
-    const a = Object.prototype.hasOwnProperty.call(accts, ln) ? accts[ln] : null;
-    if (!a) return json(res, 404, { error: 'No such account.' });
-    if (a.owner) return json(res, 403, { error: 'The owner account cannot be deleted.' });
-    for (const p of [...players.values()]) if (p.acct === ln) drop(p, 'kicked');
-    delete accts[ln];
-    saveAccts();
-    ownerLog(me.name, 'deleted the account ' + a.name);
-    logI('Owner ' + me.name + ' deleted the account ' + a.name);
-    changed();
-    json(res, 200, { ok: true });
-  },
-  '/api/owner/char': (b, res) => {
-    const me = needOwner(b, res); if (!me) return;
-    const ln = cl(b.user, 20).trim().toLowerCase();
-    const a = Object.prototype.hasOwnProperty.call(accts, ln) ? accts[ln] : null;
-    if (!a) return json(res, 404, { error: 'No such account.' });
-    const ch = a.chars.find(x => x.id === cl(b.id, 40));
-    if (!ch) return json(res, 404, { error: 'No such character.' });
-    ch.c = sanStats(b.c, ch.c);
-    saveAccts();
-    for (const p of players.values()) if (p.acct === ln && p.cid === ch.id) { p.c = ch.c; changed(); }
-    ownerLog(me.name, "edited " + a.name + "'s character " + ch.c.name);
-    logI('Owner ' + me.name + " edited " + a.name + "'s character " + ch.c.name);
-    json(res, 200, { ok: true, c: ch.c });
-  },
-  '/api/owner/kick': (b, res) => {
-    const me = needOwner(b, res); if (!me) return;
-    const p = byId(b.id); if (!p) return json(res, 404, { error: 'That player is gone.' });
-    ownerLog(me.name, 'kicked ' + p.name + ' from the party');
-    drop(p, 'kicked'); changed();
-    json(res, 200, { ok: true });
   },
   '/api/join': (b, res) => {
     const now = Date.now();
@@ -644,7 +554,6 @@ const server = http.createServer(async (req, res) => {
       if (u.pathname === '/api/ping') return json(res, 200, { ok: true, v: 2 });
       if (u.pathname === '/api/poll') return playerPoll(req, res, u);
       if (u.pathname === '/api/host/poll') return hostPoll(req, res, u);
-      if (u.pathname === '/api/owner/poll') return ownerPoll(req, res, u);
       if (u.pathname === '/favicon.ico') { res.writeHead(204); return res.end(); }
       return json(res, 404, { error: 'Not found.' });
     }
