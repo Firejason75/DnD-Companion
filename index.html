@@ -60,6 +60,11 @@ select:focus-visible{outline:2px solid var(--ac);outline-offset:1px}
 .q .ghost,.pm .ghost{padding:5px 9px;font-size:.85rem}
 /* player view: joined players get a smaller, party-first app; the gate shows only the party code screen */
 body[data-role=gate] nav,body[data-role=gate] main>section:not(#party){display:none!important}
+nav [data-tab=owner]{display:none}body[data-owner] nav [data-tab=owner]{display:block}
+/* the owner account can reach the Owner panel even before joining a party as a character */
+body[data-role=gate][data-owner] nav{display:flex!important}
+body[data-role=gate][data-owner] nav button:not([data-tab=owner]){display:none!important}
+body[data-role=gate][data-owner] main>section:not(#party):not(#owner){display:none!important}
 body[data-role=player] nav [data-tab=combat],body[data-role=player] nav [data-tab=tools],body[data-role=player] #combat,body[data-role=player] #tools,body[data-role=player] #questbox,body[data-role=player] [data-shn],body[data-role=player] [data-shq]{display:none!important}
 body[data-role=player] .btn,body[data-role=player] .ghost{padding:13px 16px;font-size:1.05rem}
 body[data-role=player] nav button{padding:13px 10px}
@@ -78,6 +83,7 @@ body[data-role=player] .dice button{padding:18px 0}
 <button role="tab" data-tab="camp" aria-selected="false">Campaign</button>
 <button role="tab" data-tab="party" aria-selected="false">Party</button>
 <button role="tab" data-tab="tools" aria-selected="false">Tools</button>
+<button role="tab" data-tab="owner" aria-selected="false">Owner</button>
 </nav>
 
 <section id="dice" class="on">
@@ -128,6 +134,7 @@ body[data-role=player] .dice button{padding:18px 0}
 </div></div>
 </section>
 <section id="party"></section>
+<section id="owner"></section>
 <section id="tools">
 <h2>Generators</h2>
 <div class="card"><div class="row"><button class="btn" data-gen="npc">NPC</button><button class="btn" data-gen="loot">Loot</button><button class="btn" data-gen="tav">Tavern</button></div><div id="gen" style="font-size:1.1rem">Tap a button to generate.</div></div>
@@ -146,7 +153,8 @@ let S={char:{name:'',cls:'',lvl:1,ab:{STR:10,DEX:10,CON:10,INT:10,WIS:10,CHA:10}
 try{const r=localStorage.getItem(KEY);if(r){const p=JSON.parse(r);S=Object.assign(S,p);S.char=Object.assign(S.char,p.char||{})}}catch(e){}
 const newChar=()=>({name:'',cls:'',lvl:1,ab:{STR:10,DEX:10,CON:10,INT:10,WIS:10,CHA:10},hp:10,max:10,ac:10,spd:30,inv:'',spells:''});
 // accounts live on the host's PC; the browser only keeps the login token. Up to 5 characters per account.
-const ACCT={tok:'',user:'',chars:[],active:'',load(){try{const o=JSON.parse(localStorage.getItem('tc-acct')||'null');if(o&&typeof o.t==='string'){this.tok=o.t.slice(0,300);this.user=String(o.u||'').slice(0,20)}}catch(e){}},store(){try{localStorage.setItem('tc-acct',JSON.stringify({t:this.tok,u:this.user}))}catch(e){}},clear(){this.tok='';this.user='';this.chars=[];this.active='';try{localStorage.removeItem('tc-acct')}catch(e){}}};ACCT.load();
+const ACCT={tok:'',user:'',owner:false,chars:[],active:'',load(){try{const o=JSON.parse(localStorage.getItem('tc-acct')||'null');if(o&&typeof o.t==='string'){this.tok=o.t.slice(0,300);this.user=String(o.u||'').slice(0,20);this.owner=!!o.o}}catch(e){}},store(){try{localStorage.setItem('tc-acct',JSON.stringify({t:this.tok,u:this.user,o:this.owner}))}catch(e){}},clear(){this.tok='';this.user='';this.owner=false;this.chars=[];this.active='';try{localStorage.removeItem('tc-acct')}catch(e){}}};ACCT.load();
+if(ACCT.owner)document.body.dataset.owner='1';
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}if(window.PARTY)PARTY.queue()};
 function openTab(id){document.querySelectorAll('nav button').forEach(b=>b.setAttribute('aria-selected',b.dataset.tab===id));document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===id))}
 const mod=v=>Math.floor((v-10)/2), fm=m=>(m>=0?'+':'')+m, pb=()=>2+Math.floor((S.char.lvl-1)/4);
@@ -211,7 +219,7 @@ function renderCamp(){
 // Events
 document.addEventListener('click',e=>{
   const t=e.target.closest('button');if(!t)return;const D=t.dataset;
-  if(D.tab){openTab(D.tab);return}
+  if(D.tab){openTab(D.tab);if(D.tab==='owner')PARTY.loadOwnerAccts();return}
   if(D.die){die=+D.die;document.querySelectorAll('#dgrid button').forEach(b=>b.classList.toggle('sel',b===t));return}
   if(D.chk){const k=D.chk,m=mod(S.char.ab[k]);const r=rollDice(1,20,m,null,k+' check');$('#chkres').textContent=`${k} check: ${r}`;return}
   if(D.hp){const c=S.char;c.hp=Math.max(0,Math.min(c.max,c.hp+ +D.hp));document.querySelector('[data-c=hp]').value=c.hp;save();return}
@@ -256,7 +264,7 @@ $('#msr').addEventListener('input',renderMon);
 // and connect to that server, usually through an invite link that carries the server address.
 const PARTY=window.PARTY=(()=>{
   const SIDES=[4,6,8,10,12,20,100];
-  let mode='idle',avail=null,view=null,msg='',timer=null,draft='',token='',hostKey='',pend=false,cr=false,gen=0,base='',rl={n:1,s:20,m:0,k:'n'},step='code',okCode='',nc={n:'',c:'',l:1},delId='',lastRole='',authTab='login',form={u:'',p:'',p2:''},myId='',pendM=false,editId='',ed={},hi={n:'',q:1},gi={n:'',q:1};
+  let mode='idle',avail=null,view=null,msg='',timer=null,draft='',token='',hostKey='',pend=false,cr=false,gen=0,base='',rl={n:1,s:20,m:0,k:'n'},step='code',okCode='',nc={n:'',c:'',l:1},delId='',lastRole='',authTab='login',form={u:'',p:'',p2:'',email:''},myId='',pendM=false,editId='',ed={},hi={n:'',q:1},gi={n:'',q:1},ownerAccts=[],ownerExp='',ownerEdit={_for:''},ownerDel='',ownerPwFor='',ownerPw='',specOn=false,specGen=0,specView=null,pendO=false;
   const okBase=s=>/^(https:\/\/[a-z0-9.-]+|http:\/\/(localhost|127\.0\.0\.1))(:\d{1,5})?$/i.test(s);
   try{draft=localStorage.getItem('tc-code')||''}catch(e){}
   try{
@@ -392,8 +400,8 @@ const PARTY=window.PARTY=(()=>{
     if(kind==='register'&&p!==form.p2){say('The two passwords do not match.');return}
     msg=kind==='register'?'Creating your account…':'Logging in…';render();
     try{
-      const j=await api('/api/'+kind,{code:okCode,user:u,pass:p});
-      form={u:'',p:'',p2:''};ACCT.tok=cl(j.token,300);ACCT.user=cl(j.user,20);ACCT.store();
+      const j=await api('/api/'+kind,Object.assign({code:okCode,user:u,pass:p},kind==='register'?{email:form.email}:{}));
+      form={u:'',p:'',p2:''};ACCT.tok=cl(j.token,300);ACCT.user=cl(j.user,20);ACCT.owner=!!j.owner;ACCT.store();if(ACCT.owner)document.body.dataset.owner='1';else delete document.body.dataset.owner;
       await loadChars();step='pick';msg='';render();
     }catch(e){
       form.p='';form.p2='';
@@ -460,7 +468,7 @@ const PARTY=window.PARTY=(()=>{
     if(authTab==='guest')body=`<p class="mu">Quick start. A guest character is not saved when you leave. Your host sets its stats.</p>${newCharForm('guest','Play as guest')}`;
     else{
       const reg=authTab==='reg';
-      body=`<p class="mu">${reg?'Make an account to keep up to 5 characters. It is stored on your host\'s computer, so it works with this host.':'Log in to your account on this host.'}</p><div class="row"><label>Username<input id="au" maxlength="20" autocomplete="username" autocapitalize="none" spellcheck="false" value="${esc(form.u)}"></label><label>Password<input id="ap" type="password" maxlength="100" autocomplete="${reg?'new-password':'current-password'}" value="${esc(form.p)}"></label>${reg?`<label>Repeat password<input id="ap2" type="password" maxlength="100" autocomplete="new-password" value="${esc(form.p2)}"></label>`:''}</div><button class="btn" data-pty="${reg?'register':'login'}">${reg?'Create account':'Log in'}</button>${reg?'<p class="mu" style="margin:8px 0 0">Use a password you do not use anywhere else. 3-20 letters, numbers, - or _ for the username; 8+ characters for the password.</p>':''}`;
+      body=`<p class="mu">${reg?'Make an account to keep up to 5 characters. It is stored on your host\'s computer, so it works with this host.':'Log in to your account on this host.'}</p><div class="row"><label>Username<input id="au" maxlength="20" autocomplete="username" autocapitalize="none" spellcheck="false" value="${esc(form.u)}"></label><label>Password<input id="ap" type="password" maxlength="100" autocomplete="${reg?'new-password':'current-password'}" value="${esc(form.p)}"></label>${reg?`<label>Repeat password<input id="ap2" type="password" maxlength="100" autocomplete="new-password" value="${esc(form.p2)}"></label><label>Email (optional)<input id="aem" type="email" maxlength="100" autocomplete="email" value="${esc(form.email)}"></label>`:''}</div><button class="btn" data-pty="${reg?'register':'login'}">${reg?'Create account':'Log in'}</button>${reg?'<p class="mu" style="margin:8px 0 0">Use a password you do not use anywhere else. 3-20 letters, numbers, - or _ for the username; 8+ characters for the password.</p>':''}`;
     }
     return `<div class="card"><h2 style="margin-top:0">Party ${esc(okCode)}</h2><div class="row" style="margin:0 0 10px">${tabs}</div>${body}</div><button class="ghost" data-pty="back">Back</button>`;
   }
@@ -507,9 +515,70 @@ const PARTY=window.PARTY=(()=>{
     if(l)return `<div class="card"><h2 style="margin-top:0">Invite link</h2><p class="mu">Send this to your friends. It opens the website and fills in your server and the party code.</p><input id="inv" readonly value="${esc(l)}" aria-label="Invite link"><div class="row" style="margin:8px 0 0"><button class="btn" data-pty="copyinv">Copy invite link</button><button class="ghost" data-pty="clearpub">Change public link</button></div></div>`;
     return `<div class="card"><h2 style="margin-top:0">Public link</h2><p class="mu">Friends can't reach your PC yet. start.bat tries to open a free public link by itself (nothing to install on Windows 10/11) and the invite link appears here when it's ready. If it can't, paste any https tunnel link here.</p><div class="row" style="margin:0"><label>Public https link<input id="purl" placeholder="https://something.lhr.life" autocomplete="off" spellcheck="false"></label><button class="btn" data-pty="savepub">Save</button></div></div>`;
   }
+  // ---- owner: manage every account on this server and watch its party ----
+  async function loadOwnerAccts(){
+    try{const j=await api('/api/owner/accounts',{token:ACCT.tok});ownerAccts=j.accounts;renderOwner()}catch(e){}
+  }
+  async function specLoop(){
+    const my=++specGen;let v=0,fail=0;
+    while(my===specGen&&specOn){
+      try{
+        const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),45000);
+        let r;try{r=await fetch(base+'/api/owner/poll?token='+encodeURIComponent(ACCT.tok)+'&v='+v,{cache:'no-store',signal:ctl.signal})}finally{clearTimeout(tm)}
+        if(my!==specGen)return;
+        if(!r.ok){specOn=false;renderOwner();return}
+        const j=await r.json();
+        if(my!==specGen)return;
+        if(j.state){v=j.v;specView=clean(j.state,true);renderOwner()}
+        fail=0;
+      }catch(e){if(my!==specGen)return;fail++;await sleep(Math.min(1000*fail,5000))}
+    }
+  }
+  function toggleSpec(){specOn=!specOn;if(specOn){specView=null;specLoop()}else specGen++;renderOwner()}
+  const ownerEd0=c=>Object.assign({cls:c.cls,lvl:c.lvl,hp:c.hp,max:c.max,ac:c.ac,spd:c.spd},c.ab);
+  function ownerAccountHtml(a){
+    const open=ownerExp===a.id;
+    let body='';
+    if(open){
+      const detail=a._detail;
+      if(!detail)body='<p class="mu" style="margin:8px 0 0">Loading…</p>';
+      else{
+        const chs=detail.chars.length?detail.chars.map(x=>{
+          const ei=ownerEdit._for===a.id+':'+x.id;
+          return `<div class="it" style="flex-wrap:wrap"><div class="nm">${who(x.c)}</div>${ei?'':`<button class="ghost" data-pty="oedit" data-user="${esc(a.id)}" data-id="${esc(x.id)}">Edit sheet</button>`}</div>${ei?editorHtmlFor(a.id,x.id,ownerEd0(x.c)):''}`;
+        }).join(''):'<p class="mu" style="margin:4px 0">No characters.</p>';
+        body=`<div class="card" style="margin:8px 0 0">${chs}</div>`;
+      }
+    }
+    return `<div class="it" style="flex-wrap:wrap"><div class="nm">${esc(a.name)}${a.owner?' <span class="mu">(owner)</span>':''}<div class="mu" style="font-weight:400">${a.chars} character${a.chars===1?'':'s'}${a.email?' · '+esc(a.email):''}</div></div>
+    <button class="ghost" data-pty="oexp" data-id="${esc(a.id)}">${open?'Close':'Open'}</button>
+    ${a.owner?'':`<button class="ghost" data-pty="opwstart" data-id="${esc(a.id)}">Reset password</button><button class="danger" data-pty="odel" data-id="${esc(a.id)}">${ownerDel===a.id?'Tap again to delete':'Delete account'}</button>`}
+    </div>${ownerPwFor===a.id?`<div class="row" style="margin:6px 0 0"><label>New password<input id="opw" type="password" minlength="8" maxlength="100" value="${esc(ownerPw)}"></label><button class="btn" data-pty="opwsave" data-id="${esc(a.id)}">Save</button><button class="ghost" data-pty="opwcancel">Cancel</button></div>`:''}${body}`;
+  }
+  function editorHtmlFor(user,id,ed_){
+    const f=(k,l,t)=>`<label style="min-width:80px">${l}<input data-oe="${k}" ${t==='text'?'maxlength="30"':'type="number"'} value="${esc(ed_[k]==null?'':ed_[k])}"></label>`;
+    if(ownerEdit._for!=='' && ownerEdit._for===user+':'+id)ed_=Object.assign({},ed_,ownerEdit);
+    return `<div class="card" style="margin:4px 0 8px"><div class="row">${f('cls','Class','text')}${f('lvl','Level')}${f('hp','HP')}${f('max','Max HP')}${f('ac','AC')}${f('spd','Speed')}</div><div class="row">${ABK.map(k=>f(k,k)).join('')}</div><div class="row" style="margin:0"><button class="btn" data-pty="osave" data-user="${esc(user)}" data-id="${esc(id)}">Save</button><button class="ghost" data-pty="ocancel">Cancel</button></div></div>`;
+  }
+  function ownerSpecHtml(){
+    if(!specOn)return `<div class="card"><p class="mu" style="margin:0">Watch the party running on this server without joining it. Players never see you.</p><button class="btn" style="margin-top:8px" data-pty="ospec">Start spectating</button></div>`;
+    if(!specView)return `<div class="card"><p class="mu" style="margin:0">Connecting…</p><button class="ghost" style="margin-top:8px" data-pty="ospec">Stop</button></div>`;
+    const ro=specView.roster.length?specView.roster.map(r=>`<div class="pm ${r.on?'':'off'}"><div class="top"><b>${esc(r.name)}</b><span class="mu">${esc(r.cls)}${r.cls?' ':''}${r.lvl?'lvl '+r.lvl:''}${r.on?'':' · offline'}</span><button class="danger" data-pty="okick" data-id="${esc(r.id)}" aria-label="Remove ${esc(r.name)}">✕</button></div><div>HP ${r.hp}/${r.max} · AC ${r.ac}</div></div>`).join(''):'<p class="mu">No players have joined yet.</p>';
+    return `<div class="card"><div class="row" style="margin:0 0 8px"><b style="flex:1">Spectating party ${esc(specView.code)}</b><button class="ghost" data-pty="ospec">Stop</button></div>${ro}</div>`;
+  }
+  function ownerHtml(){
+    return `<div class="card"><h2 style="margin-top:0">Server owner</h2><p class="mu">You can see and manage every account on this server, and watch any party without joining it.</p></div><h2>This party</h2>${ownerSpecHtml()}<h2>All accounts (${ownerAccts.length})</h2><div class="card">${ownerAccts.length?ownerAccts.map(ownerAccountHtml).join(''):'<p class="mu" style="margin:0">No accounts yet.</p>'}</div>`;
+  }
+  function renderOwner(){
+    const el=document.getElementById('owner');if(!el)return;
+    const ae=document.activeElement;
+    if(ae&&el.contains(ae)&&(ae.tagName==='INPUT'||ae.tagName==='SELECT')){pendO=true;return}
+    pendO=false;el.innerHTML=ownerHtml();
+  }
   function render(){
     applyRole();
     if(role()==='player')renderMine();
+    if(document.body.dataset.owner)renderOwner();
     const el=document.getElementById('party');if(!el)return;
     const ae=document.activeElement;
     if(mode!=='idle'&&ae&&el.contains(ae)&&(ae.tagName==='INPUT'||ae.tagName==='SELECT')){pend=true;return}
@@ -548,7 +617,28 @@ const PARTY=window.PARTY=(()=>{
     else if(D.pty==='login')authDo('login');
     else if(D.pty==='register')authDo('register');
     else if(D.pty==='tab'){authTab=['login','reg','guest'].includes(D.t)?D.t:'login';msg='';render()}
-    else if(D.pty==='logout'){ACCT.clear();step='auth';msg='';render()}
+    else if(D.pty==='logout'){ACCT.clear();step='auth';msg='';specOn=false;specGen++;delete document.body.dataset.owner;render()}
+    else if(D.pty==='oexp'){ownerExp=ownerExp===D.id?'':D.id;ownerPwFor='';ownerDel='';if(ownerExp){try{const j=await api('/api/owner/account',{token:ACCT.tok,user:ownerExp});const a=ownerAccts.find(x=>x.id===ownerExp);if(a)a._detail=j}catch(e){}}renderOwner()}
+    else if(D.pty==='opwstart'){ownerPwFor=D.id;ownerPw='';renderOwner()}
+    else if(D.pty==='opwcancel'){ownerPwFor='';renderOwner()}
+    else if(D.pty==='opwsave'){
+      const i=document.getElementById('opw'),pw=i?i.value:ownerPw;
+      if(!pw||pw.length<8){say('Password must be 8 to 100 characters.');return}
+      try{await api('/api/owner/resetpass',{token:ACCT.tok,user:D.id,pass:pw});ownerPwFor='';say('Password reset.')}catch(err){fail(err)}
+    }
+    else if(D.pty==='odel'){
+      if(ownerDel!==D.id){ownerDel=D.id;renderOwner();setTimeout(()=>{if(ownerDel===D.id){ownerDel='';renderOwner()}},4000);return}
+      ownerDel='';
+      try{await api('/api/owner/delaccount',{token:ACCT.tok,user:D.id});ownerAccts=ownerAccts.filter(a=>a.id!==D.id);if(ownerExp===D.id)ownerExp='';renderOwner()}catch(err){fail(err)}
+    }
+    else if(D.pty==='oedit'){ownerEdit=Object.assign({_for:D.user+':'+D.id},ownerEd0((ownerAccts.find(a=>a.id===D.user)._detail.chars.find(c=>c.id===D.id)).c));renderOwner()}
+    else if(D.pty==='ocancel'){ownerEdit={_for:''};renderOwner()}
+    else if(D.pty==='osave'){
+      const c={cls:ownerEdit.cls,lvl:ownerEdit.lvl,hp:ownerEdit.hp,max:ownerEdit.max,ac:ownerEdit.ac,spd:ownerEdit.spd,ab:{}};for(const k of ABK)c.ab[k]=ownerEdit[k];
+      try{const j=await api('/api/owner/char',{token:ACCT.tok,user:D.user,id:D.id,c});const a=ownerAccts.find(x=>x.id===D.user);if(a&&a._detail){const ch=a._detail.chars.find(x=>x.id===D.id);if(ch)ch.c=j.c}ownerEdit={_for:''};say('Sheet saved.')}catch(err){fail(err)}
+    }
+    else if(D.pty==='ospec')toggleSpec();
+    else if(D.pty==='okick'){try{await api('/api/owner/kick',{token:ACCT.tok,id:D.id})}catch(err){fail(err)}}
     else if(D.pty==='back'){step='code';okCode='';msg='';render()}
     else if(D.pty==='delc'){
       if(delId!==D.id){delId=D.id;render();renderChar();setTimeout(()=>{if(delId===D.id){delId='';render();renderChar()}},4000);return}
@@ -591,17 +681,17 @@ const PARTY=window.PARTY=(()=>{
       }catch(err){fail(err)}
     }
   });
-  document.addEventListener('input',e=>{const i=e.target.id;if(i==='pcode')draft=e.target.value;else if(i==='ncn')nc.n=e.target.value;else if(i==='ncc')nc.c=e.target.value;else if(i==='au')form.u=e.target.value;else if(i==='ap')form.p=e.target.value;else if(i==='ap2')form.p2=e.target.value;else if(i==='hin')hi.n=e.target.value;else if(i==='hiq')hi.q=e.target.value;else if(i==='gin')gi.n=e.target.value;else if(i==='giq')gi.q=e.target.value;else if(e.target.dataset&&e.target.dataset.e!==undefined)ed[e.target.dataset.e]=e.target.value});
+  document.addEventListener('input',e=>{const i=e.target.id;if(i==='pcode')draft=e.target.value;else if(i==='ncn')nc.n=e.target.value;else if(i==='ncc')nc.c=e.target.value;else if(i==='au')form.u=e.target.value;else if(i==='ap')form.p=e.target.value;else if(i==='ap2')form.p2=e.target.value;else if(i==='aem')form.email=e.target.value;else if(i==='hin')hi.n=e.target.value;else if(i==='hiq')hi.q=e.target.value;else if(i==='gin')gi.n=e.target.value;else if(i==='giq')gi.q=e.target.value;else if(i==='opw')ownerPw=e.target.value;else if(e.target.dataset&&e.target.dataset.oe!==undefined)ownerEdit[e.target.dataset.oe]=e.target.value;else if(e.target.dataset&&e.target.dataset.e!==undefined)ed[e.target.dataset.e]=e.target.value});
   document.addEventListener('keydown',e=>{if(e.key!=='Enter')return;const i=e.target.id;
     if(i==='pcode')check(e.target.value);
     else if(i==='au'||i==='ap'||i==='ap2')authDo(authTab==='reg'?'register':'login');
     else if(i==='ncn'||i==='ncc'){if(step==='pick')create();else if(authTab==='guest')guest()}
   });
   document.addEventListener('change',e=>{if(e.target.closest&&e.target.closest('#party'))readRl()});
-  document.addEventListener('focusout',e=>{if(pend&&e.target.closest&&e.target.closest('#party'))setTimeout(render,0);if(pendM&&e.target.closest&&e.target.closest('#char'))setTimeout(renderMine,0)});
+  document.addEventListener('focusout',e=>{if(pend&&e.target.closest&&e.target.closest('#party'))setTimeout(render,0);if(pendM&&e.target.closest&&e.target.closest('#char'))setTimeout(renderMine,0);if(pendO&&e.target.closest&&e.target.closest('#owner'))setTimeout(renderOwner,0)});
   window.addEventListener('hashchange',()=>{if(/(^|[#&])s=/.test(location.hash))location.reload()});
   ping();
-  return {queue,render,slotsHtml,renderMine,role,get mode(){return mode}};
+  return {queue,render,slotsHtml,renderMine,renderOwner,loadOwnerAccts,role,get mode(){return mode}};
 })();
 renderChar();renderCombat();renderCamp();renderHist();renderMon();PARTY.render();
 </script>
