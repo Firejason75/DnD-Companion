@@ -17,6 +17,27 @@ const path = require('path');
 const crypto = require('crypto');
 const { exec, spawn } = require('child_process');
 
+// ---- logs: logs/server-log.txt has everything, logs/errors-log.txt only warnings and errors ----
+const LOGDIR = path.join(__dirname, 'logs');
+const LOGMAX = 2 * 1024 * 1024;
+try {
+  fs.mkdirSync(LOGDIR, { recursive: true });
+  fs.writeFileSync(path.join(LOGDIR, '.gitignore'), '*\n'); // never commit logs to GitHub
+  for (const f of ['server-log.txt', 'errors-log.txt']) {
+    try { if (fs.statSync(path.join(LOGDIR, f)).size > LOGMAX) fs.renameSync(path.join(LOGDIR, f), path.join(LOGDIR, f + '.old')); } catch (e) { /* no file yet */ }
+  }
+} catch (e) { /* logging is best effort */ }
+function log(level, msg) {
+  const line = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' ' + level.padEnd(5) + ' ' + String(msg).replace(/\r?\n/g, ' | ');
+  try {
+    fs.appendFileSync(path.join(LOGDIR, 'server-log.txt'), line + '\n');
+    if (level !== 'INFO') fs.appendFileSync(path.join(LOGDIR, 'errors-log.txt'), line + '\n');
+  } catch (e) { /* ignore */ }
+}
+const logI = m => log('INFO', m), logW = m => log('WARN', m), logE = m => log('ERROR', m);
+process.on('uncaughtException', e => { logE('Crash: ' + (e && e.stack || e)); process.exit(1); });
+process.on('unhandledRejection', e => logE('Unhandled error: ' + (e && e.stack || e)));
+
 const PORT = Number(process.env.PORT) || 3000;
 const SITE = process.env.SITE_URL || 'https://firejason75.github.io/DnD-Companion/';
 const AL = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -207,6 +228,7 @@ const needPlayer = (b, res) => {
 // take a player out of the party; they are told why on their next poll
 const drop = (p, reason) => {
   players.delete(p.token);
+  logI('Player removed: ' + p.name + ' (' + reason + ')');
   removed.set(p.token, { reason, at: Date.now() });
   if (p.wait) { clearTimeout(p.wait.t); json(p.wait.res, 200, { kicked: reason }); p.wait = null; removed.delete(p.token); }
 };
@@ -218,6 +240,7 @@ const routes = {
     if (fails.length >= 10) return json(res, 429, { error: 'Too many attempts. Wait a minute and try again.' });
     const c = cl(b.code, 12).toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!same(c, code)) { fails.push(now); return json(res, 403, { error: 'Wrong party code.' }); }
+    if (b.check === true) return json(res, 200, { ok: true });
     const i = info(b);
     for (const [t, p] of players) {
       if (p.name.toLowerCase() === i.name.toLowerCase()) {
@@ -228,6 +251,7 @@ const routes = {
     if (players.size >= MAXP) return json(res, 409, { error: 'The party is full.' });
     const p = Object.assign({ id: hex(6), token: tok(), wait: null, last: 0, seen: now, on: true }, i);
     players.set(p.token, p);
+    logI('Player joined: ' + p.name + ' (' + players.size + ' in party)');
     changed();
     json(res, 200, { token: p.token, id: p.id });
   },
@@ -281,6 +305,7 @@ const routes = {
     feed = [];
     code = mkCode();
     console.log('\n  New party code: ' + code + '\n');
+    logI('Host made a new party code');
     changed();
     json(res, 200, { ok: true });
   },
@@ -289,12 +314,21 @@ const routes = {
     const u = cl(b.url, 200).trim().replace(/\/+$/, '');
     if (u && !okUrl(u)) return json(res, 400, { error: 'That must be an https link, like https://something.lhr.life' });
     publicUrl = u;
+    logI('Host set public link: ' + (u || '(cleared)'));
     changed();
     json(res, 200, { ok: true });
   },
 };
 
 const server = http.createServer(async (req, res) => {
+  const t0 = Date.now();
+  res.on('finish', () => {
+    let path_ = req.url.split('?')[0]; // never log the query: it holds keys and tokens
+    const sc = res.statusCode;
+    if (sc === 200 && /\/poll$/.test(path_)) return; // routine live-update polls would flood the log
+    const line = req.method + ' ' + path_ + ' -> ' + sc + ' (' + (Date.now() - t0) + ' ms)' + (req.headers.origin ? ' from ' + req.headers.origin : '');
+    if (sc >= 500) logE(line); else if (sc >= 400 && ![401, 404, 409].includes(sc)) logW(line); else logI(line);
+  });
   try {
     const u = new URL(req.url, 'http://localhost');
     const api = u.pathname.startsWith('/api/');
@@ -321,6 +355,7 @@ const server = http.createServer(async (req, res) => {
     }
     json(res, 405, { error: 'Not allowed.' });
   } catch (e) {
+    if (!e.status || e.status >= 500) logE('Request failed: ' + (e && e.stack || e));
     json(res, e.status || 500, { error: e.status ? e.message : 'Server error.' });
   }
 });
@@ -343,14 +378,28 @@ setInterval(() => {
 // then cloudflared if the host happens to have it. Otherwise the host can paste any https link.
 let tunnelProc = null;
 const stopTunnel = () => { try { tunnelProc && tunnelProc.kill(); } catch (e) { /* already gone */ } };
-process.on('exit', stopTunnel);
+process.on('exit', () => { logI('Server stopped'); stopTunnel(); });
 process.on('SIGINT', () => { stopTunnel(); process.exit(0); });
 
 const TUNNELS = [
   { name: 'ssh (localhost.run)', cmd: 'ssh',
-    args: () => ['-T', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=30',
-      '-o', 'ExitOnForwardFailure=yes', '-R', '80:127.0.0.1:' + PORT, 'nokey@localhost.run'],
-    find: t => { const m = t.match(/https:\/\/([a-z0-9-]+)\.(?:lhr\.life|localhost\.run)/gi); return m && m.find(x => !/\/\/admin\./i.test(x)); } },
+    args: () => ['-T', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),
+      '-o', 'LogLevel=ERROR', '-o', 'ServerAliveInterval=30', '-R', '80:127.0.0.1:' + PORT, 'nokey@localhost.run'],
+    find: t => {
+      const c = t.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+      const re = /(?:https?:\/\/)?([a-z0-9][a-z0-9-]*)\.(?:lhr\.life|localhost\.run)\b/gi;
+      let m;
+      while ((m = re.exec(c))) if (!/^(admin|docs|www|nokey)$/i.test(m[1])) return 'https://' + m[0].replace(/^https?:\/\//i, '').toLowerCase();
+      return null;
+    } },
+  { name: 'ssh (pinggy)', cmd: 'ssh',
+    args: () => ['-T', '-p', '443', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),
+      '-o', 'LogLevel=ERROR', '-o', 'ServerAliveInterval=30', '-R', '0:127.0.0.1:' + PORT, 'free.pinggy.io'],
+    find: t => { const m = t.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').match(/https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.pinggy\.(?:link|io)\b/i); return m && !/\/\/(dashboard|www|free|a)\./i.test(m[0]) ? m[0] : null; } },
+  { name: 'ssh (serveo)', cmd: 'ssh',
+    args: () => ['-T', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),
+      '-o', 'LogLevel=ERROR', '-o', 'ServerAliveInterval=30', '-R', '80:127.0.0.1:' + PORT, 'serveo.net'],
+    find: t => { const m = t.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').match(/https:\/\/[a-z0-9-]+\.serveo(?:usercontent)?\.(?:net|com)\b/i); return m && m[0]; } },
   { name: 'cloudflared', cmd: 'cloudflared',
     args: () => ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:' + PORT],
     find: t => { const m = t.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i); return m && m[0]; } },
@@ -360,22 +409,33 @@ function startTunnel(i) {
   i = i || 0;
   if (process.env.TUNNEL === '0' || publicUrl) return;
   if (i >= TUNNELS.length) {
+    logE('No public link: every tunnel option failed');
     console.log('  Could not open a public link automatically (no internet, or ssh is blocked).');
     console.log('  Friends on your own Wi-Fi/network are not covered either. You can paste any https tunnel link on your host page.\n');
     return;
   }
   const t = TUNNELS[i];
-  let p, found = false, moved = false;
-  const next = () => { if (moved) return; moved = true; startTunnel(i + 1); };
-  try { p = spawn(t.cmd, t.args(), { windowsHide: true }); } catch (e) { return next(); }
+  let p, found = false, moved = false, buf = '';
+  const next = why => {
+    if (moved) return; moved = true;
+    const clean = buf.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split(/\r?\n/).filter(l => l.trim() && !/[\u2580-\u259f]/.test(l) && !/^\s*$/.test(l));
+    logW(t.name + ' did not work' + (why ? ': ' + why : '') + (clean.length ? ' | output: ' + clean.slice(-8).join(' / ') : ''));
+    console.log('  ' + t.name + ' did not work' + (why ? ': ' + why : '') + (buf.trim() ? '\n    ' + buf.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split(/\r?\n/).filter(l => l.trim() && !/[\u2580-\u259f]/.test(l)).slice(-8).join('\n    ') : ''));
+    startTunnel(i + 1);
+  };
+  logI('Trying ' + t.name);
+  try { p = spawn(t.cmd, t.args(), { windowsHide: true }); } catch (e) { return next(e.message); }
   tunnelProc = p;
-  let buf = '';
   const scan = d => {
+    const shown = String(d).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split(/\r?\n/).filter(l => l.trim() && !/[\u2580-\u259f]/.test(l)).join(' / ');
+    if (shown) logI('[' + t.name + '] ' + shown);
     if (found) return;
-    buf = (buf + String(d)).slice(-4000);
-    const u = t.find(buf);
+    const chunk = String(d);
+    buf = (buf + chunk).slice(-60000);
+    const u = t.find(chunk) || t.find(buf);
     if (u) {
       found = true; publicUrl = u; changed();
+      logI('Public link is up via ' + t.name + ': ' + publicUrl);
       console.log('  Public link is up (' + t.name + '): ' + publicUrl);
       console.log('  Invite link for friends (also shown on your host page):');
       console.log('  ' + SITE + '#s=' + encodeURIComponent(publicUrl) + '&c=' + code + '\n');
@@ -383,15 +443,16 @@ function startTunnel(i) {
   };
   p.stdout.on('data', scan);
   p.stderr.on('data', scan);
-  p.on('error', () => next());
-  p.on('exit', () => {
-    if (found) { publicUrl = ''; changed(); console.log('  The public link stopped. Restart start.bat for a new one.\n'); }
-    else next();
+  p.on('error', e => next(e.code === 'ENOENT' ? 'not installed' : e.message));
+  p.on('exit', c => {
+    if (found) { publicUrl = ''; changed(); logW('The public link stopped (' + t.name + ', code ' + c + ')'); console.log('  The public link stopped. Restart start.bat for a new one.\n'); }
+    else next('it stopped (code ' + (c == null ? '?' : c) + ')');
   });
-  setTimeout(() => { if (!found && !moved) { try { p.kill(); } catch (e) { /* gone */ } } }, 25000).unref();
+  setTimeout(() => { if (!found && !moved) { next('no link after 20 seconds'); try { p.kill(); } catch (e) { /* gone */ } } }, 20000).unref();
 }
 
 server.on('error', e => {
+  logE('Server error: ' + (e.code || '') + ' ' + e.message);
   if (e.code === 'EADDRINUSE') console.error('\n  Port ' + PORT + ' is already in use. Close the other server window, or run with a different port (set PORT=3001).\n');
   else console.error('\n  Server error: ' + e.message + '\n');
   process.exit(1);
@@ -399,11 +460,13 @@ server.on('error', e => {
 
 server.listen(PORT, '127.0.0.1', () => {
   const hostUrl = 'http://localhost:' + PORT + '/?host=' + hostKey;
+  logI('Server started on port ' + PORT + ' (node ' + process.version + ', ' + process.platform + '); host link not logged on purpose');
   console.log('\n  D&D party server is running.\n');
   console.log('  Party code:  ' + code);
   console.log('  Your host link (keep it private, it controls the party):');
   console.log('  ' + hostUrl + '\n');
   console.log('  Closing this window ends the party.\n');
+  console.log('  Logs: ' + LOGDIR + '  (server-log.txt = everything, errors-log.txt = warnings and errors)\n');
   if (publicUrl) {
     console.log('  Invite link for friends:');
     console.log('  ' + SITE + '#s=' + encodeURIComponent(publicUrl) + '&c=' + code + '\n');
