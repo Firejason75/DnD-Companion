@@ -381,7 +381,7 @@ const PARTY=window.PARTY=(()=>{
   function inviteCard(v){
     const l=inviteLink(v);
     if(l)return `<div class="card"><h2 style="margin-top:0">Invite link</h2><p class="mu">Send this to your friends. It opens the website and fills in your server and the party code.</p><input id="inv" readonly value="${esc(l)}" aria-label="Invite link"><div class="row" style="margin:8px 0 0"><button class="btn" data-pty="copyinv">Copy invite link</button><button class="ghost" data-pty="clearpub">Change public link</button></div></div>`;
-    return `<div class="card"><h2 style="margin-top:0">Public link</h2><p class="mu">Friends can't reach your PC yet. If you have cloudflared installed, start.bat opens a free tunnel and the invite link appears here by itself. Otherwise, run any tunnel and paste its https link here.</p><div class="row" style="margin:0"><label>Public https link<input id="purl" placeholder="https://something.trycloudflare.com" autocomplete="off" spellcheck="false"></label><button class="btn" data-pty="savepub">Save</button></div></div>`;
+    return `<div class="card"><h2 style="margin-top:0">Public link</h2><p class="mu">Friends can't reach your PC yet. start.bat tries to open a free public link by itself (nothing to install on Windows 10/11) and the invite link appears here when it's ready. If it can't, paste any https tunnel link here.</p><div class="row" style="margin:0"><label>Public https link<input id="purl" placeholder="https://something.lhr.life" autocomplete="off" spellcheck="false"></label><button class="btn" data-pty="savepub">Save</button></div></div>`;
   }
   function render(){
     const el=document.getElementById('party');if(!el)return;

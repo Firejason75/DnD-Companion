@@ -6,7 +6,7 @@
 //   node server.js            serve on this PC only (http://localhost:3000)
 //   set PORT=3001             use another port
 //   set NO_OPEN=1             do not open the browser automatically
-//   set TUNNEL=0              do not try to start cloudflared automatically
+//   set TUNNEL=0              do not try to open a public link automatically
 //   set PUBLIC_URL=https://x  use your own public https address instead of a tunnel
 //   set SITE_URL=https://...  the web page your friends use (default: the GitHub site)
 //   set ORIGINS=a,b           extra web addresses allowed to talk to this server
@@ -287,7 +287,7 @@ const routes = {
   '/api/host/public': (b, res) => {
     if (!needHost(b, res)) return;
     const u = cl(b.url, 200).trim().replace(/\/+$/, '');
-    if (u && !okUrl(u)) return json(res, 400, { error: 'That must be an https link, like https://something.trycloudflare.com' });
+    if (u && !okUrl(u)) return json(res, 400, { error: 'That must be an https link, like https://something.lhr.life' });
     publicUrl = u;
     changed();
     json(res, 200, { ok: true });
@@ -338,36 +338,57 @@ setInterval(() => {
   if (any) changed();
 }, 5000).unref();
 
-// ---- optional: start a free Cloudflare quick tunnel so friends can reach this PC ----
-function startTunnel() {
+// ---- optional: open a free public link so friends can reach this PC ----
+// Tries, in order: the ssh that already ships with Windows 10/11 (localhost.run, nothing to install),
+// then cloudflared if the host happens to have it. Otherwise the host can paste any https link.
+let tunnelProc = null;
+const stopTunnel = () => { try { tunnelProc && tunnelProc.kill(); } catch (e) { /* already gone */ } };
+process.on('exit', stopTunnel);
+process.on('SIGINT', () => { stopTunnel(); process.exit(0); });
+
+const TUNNELS = [
+  { name: 'ssh (localhost.run)', cmd: 'ssh',
+    args: () => ['-T', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=30',
+      '-o', 'ExitOnForwardFailure=yes', '-R', '80:127.0.0.1:' + PORT, 'nokey@localhost.run'],
+    find: t => { const m = t.match(/https:\/\/([a-z0-9-]+)\.(?:lhr\.life|localhost\.run)/gi); return m && m.find(x => !/\/\/admin\./i.test(x)); } },
+  { name: 'cloudflared', cmd: 'cloudflared',
+    args: () => ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:' + PORT],
+    find: t => { const m = t.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i); return m && m[0]; } },
+];
+
+function startTunnel(i) {
+  i = i || 0;
   if (process.env.TUNNEL === '0' || publicUrl) return;
-  let p;
-  try { p = spawn('cloudflared', ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:' + PORT], { windowsHide: true }); }
-  catch (e) { return; }
-  let found = false;
+  if (i >= TUNNELS.length) {
+    console.log('  Could not open a public link automatically (no internet, or ssh is blocked).');
+    console.log('  Friends on your own Wi-Fi/network are not covered either. You can paste any https tunnel link on your host page.\n');
+    return;
+  }
+  const t = TUNNELS[i];
+  let p, found = false, moved = false;
+  const next = () => { if (moved) return; moved = true; startTunnel(i + 1); };
+  try { p = spawn(t.cmd, t.args(), { windowsHide: true }); } catch (e) { return next(); }
+  tunnelProc = p;
+  let buf = '';
   const scan = d => {
     if (found) return;
-    const m = String(d).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
-    if (m) {
-      found = true; publicUrl = m[0]; changed();
-      console.log('  Tunnel is up: ' + publicUrl);
+    buf = (buf + String(d)).slice(-4000);
+    const u = t.find(buf);
+    if (u) {
+      found = true; publicUrl = u; changed();
+      console.log('  Public link is up (' + t.name + '): ' + publicUrl);
       console.log('  Invite link for friends (also shown on your host page):');
       console.log('  ' + SITE + '#s=' + encodeURIComponent(publicUrl) + '&c=' + code + '\n');
     }
   };
   p.stdout.on('data', scan);
   p.stderr.on('data', scan);
-  p.on('error', e => {
-    if (e.code === 'ENOENT') {
-      console.log('  cloudflared is not installed, so there is no public link yet.');
-      console.log('  Install it once (see https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/ ),');
-      console.log('  then start this again. Or run any tunnel you like and paste its https link on your host page.\n');
-    } else console.log('  Could not start cloudflared: ' + e.message + '\n');
+  p.on('error', () => next());
+  p.on('exit', () => {
+    if (found) { publicUrl = ''; changed(); console.log('  The public link stopped. Restart start.bat for a new one.\n'); }
+    else next();
   });
-  p.on('exit', () => { if (found) { publicUrl = ''; changed(); console.log('  The tunnel stopped.\n'); } });
-  const stop = () => { try { p.kill(); } catch (e) { /* already gone */ } };
-  process.on('exit', stop);
-  process.on('SIGINT', () => { stop(); process.exit(0); });
+  setTimeout(() => { if (!found && !moved) { try { p.kill(); } catch (e) { /* gone */ } } }, 25000).unref();
 }
 
 server.on('error', e => {
@@ -386,6 +407,6 @@ server.listen(PORT, '127.0.0.1', () => {
   if (publicUrl) {
     console.log('  Invite link for friends:');
     console.log('  ' + SITE + '#s=' + encodeURIComponent(publicUrl) + '&c=' + code + '\n');
-  } else startTunnel();
+  } else startTunnel(0);
   if (process.platform === 'win32' && process.env.NO_OPEN !== '1') exec('start "" "' + hostUrl + '"');
 });
