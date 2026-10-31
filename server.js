@@ -233,7 +233,111 @@ const drop = (p, reason) => {
   if (p.wait) { clearTimeout(p.wait.t); json(p.wait.res, 200, { kicked: reason }); p.wait = null; removed.delete(p.token); }
 };
 
+// ---- accounts: usernames and passwords live on the host's PC (data/accounts.json), passwords only as scrypt hashes ----
+const DATA = path.join(__dirname, 'data');
+const ACC_FILE = path.join(DATA, 'accounts.json');
+const MAXACC = 100, MAXCHARS = 5, TOKEN_DAYS = 30;
+let secret, accts = {};
+try {
+  fs.mkdirSync(DATA, { recursive: true });
+  fs.writeFileSync(path.join(DATA, '.gitignore'), '*\n'); // never commit accounts to GitHub
+  try { secret = fs.readFileSync(path.join(DATA, 'secret.key')); } catch (e) { secret = null; }
+  if (!secret || secret.length < 32) { secret = crypto.randomBytes(32); fs.writeFileSync(path.join(DATA, 'secret.key'), secret); }
+  try { accts = JSON.parse(fs.readFileSync(ACC_FILE, 'utf8')) || {}; } catch (e) { accts = {}; }
+} catch (e) { secret = crypto.randomBytes(32); logE('Could not set up the data folder: ' + e.message); }
+const saveAccts = () => {
+  try { fs.writeFileSync(ACC_FILE + '.tmp', JSON.stringify(accts)); fs.renameSync(ACC_FILE + '.tmp', ACC_FILE); }
+  catch (e) { logE('Could not save accounts: ' + e.message); }
+};
+const scrypt = (pw, salt) => new Promise((ok, no) => crypto.scrypt(pw, salt, 32, (e, k) => e ? no(e) : ok(k)));
+const mac = s => crypto.createHmac('sha256', secret).update(s).digest('base64url');
+const mkToken = ln => { const exp = Date.now() + TOKEN_DAYS * 86400000; const b = ln + '.' + exp; return b + '.' + mac(b); };
+function userFrom(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3 || !same(parts[2], mac(parts[0] + '.' + parts[1]))) return null;
+  if (!(+parts[1] > Date.now())) return null;
+  return Object.prototype.hasOwnProperty.call(accts, parts[0]) ? accts[parts[0]] : null;
+}
+const sanChar = c => {
+  c = c && typeof c === 'object' ? c : {};
+  const ab = c.ab && typeof c.ab === 'object' ? c.ab : {}, A = {};
+  for (const k of ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA']) A[k] = num(ab[k] == null ? 10 : ab[k], 1, 30);
+  return { name: cl(c.name, 30).trim() || 'Adventurer', cls: cl(c.cls, 30), lvl: num(c.lvl, 1, 20), ab: A,
+    hp: num(c.hp, -999, 9999), max: num(c.max, 0, 9999), ac: num(c.ac, 0, 99), spd: num(c.spd, 0, 999),
+    inv: cl(c.inv, 3000), spells: cl(c.spells, 3000) };
+};
+const loginFails = new Map(); // username -> recent failure times
+const afails = [];            // all failed logins, for a global brake
+const checkCode = (b, res) => {
+  const now = Date.now();
+  while (fails.length && now - fails[0] > 60000) fails.shift();
+  if (fails.length >= 10) { json(res, 429, { error: 'Too many attempts. Wait a minute and try again.' }); return false; }
+  const c = cl(b.code, 12).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!same(c, code)) { fails.push(now); json(res, 403, { error: 'Wrong party code.' }); return false; }
+  return true;
+};
+const needAcct = (b, res) => {
+  const u = userFrom(b.token);
+  if (!u) json(res, 401, { error: 'Please log in again.' });
+  return u;
+};
+const chars = u => u.chars.map(x => ({ id: x.id, c: x.c }));
+const DUMMY = crypto.randomBytes(16);
+
 const routes = {
+  '/api/register': async (b, res) => {
+    if (!checkCode(b, res)) return;
+    const name = cl(b.user, 20).trim(), ln = name.toLowerCase(), pw = String(b.pass == null ? '' : b.pass);
+    if (!/^[A-Za-z0-9_-]{3,20}$/.test(name)) return json(res, 400, { error: 'Username: 3 to 20 letters, numbers, - or _.' });
+    if (pw.length < 8 || pw.length > 100) return json(res, 400, { error: 'Password must be 8 to 100 characters.' });
+    if (Object.prototype.hasOwnProperty.call(accts, ln)) return json(res, 409, { error: 'That username is taken.' });
+    if (Object.keys(accts).length >= MAXACC) return json(res, 409, { error: 'This host has reached its account limit.' });
+    const salt = crypto.randomBytes(16), hash = await scrypt(pw, salt);
+    if (Object.prototype.hasOwnProperty.call(accts, ln)) return json(res, 409, { error: 'That username is taken.' });
+    accts[ln] = { name, salt: salt.toString('base64'), hash: hash.toString('base64'), chars: [], made: Date.now() };
+    saveAccts();
+    logI('Account created: ' + name);
+    json(res, 200, { token: mkToken(ln), user: name });
+  },
+  '/api/login': async (b, res) => {
+    if (!checkCode(b, res)) return;
+    const now = Date.now(), ln = cl(b.user, 20).trim().toLowerCase(), pw = String(b.pass == null ? '' : b.pass).slice(0, 100);
+    while (afails.length && now - afails[0] > 60000) afails.shift();
+    const mine = (loginFails.get(ln) || []).filter(t => now - t < 300000);
+    if (afails.length >= 30 || mine.length >= 5) return json(res, 429, { error: 'Too many tries. Wait a few minutes and try again.' });
+    const u = Object.prototype.hasOwnProperty.call(accts, ln) ? accts[ln] : null;
+    const got = await scrypt(pw, u ? Buffer.from(u.salt, 'base64') : DUMMY);
+    if (!u || !crypto.timingSafeEqual(got, Buffer.from(u.hash, 'base64'))) {
+      mine.push(now); loginFails.set(ln, mine); afails.push(now);
+      logW('Failed login for "' + ln.slice(0, 20) + '"');
+      return json(res, 401, { error: 'Wrong username or password.' });
+    }
+    loginFails.delete(ln);
+    logI('Login: ' + u.name);
+    json(res, 200, { token: mkToken(ln), user: u.name, chars: chars(u) });
+  },
+  '/api/chars/list': (b, res) => {
+    const u = needAcct(b, res); if (!u) return;
+    json(res, 200, { user: u.name, chars: chars(u) });
+  },
+  '/api/chars/save': (b, res) => {
+    const u = needAcct(b, res); if (!u) return;
+    const c = sanChar(b.c), id = cl(b.id, 40), cur = id && u.chars.find(x => x.id === id);
+    if (cur) cur.c = c;
+    else {
+      if (u.chars.length >= MAXCHARS) return json(res, 409, { error: 'You already have 5 characters. Delete one first.' });
+      if (u.chars.some(x => x.c.name.toLowerCase() === c.name.toLowerCase())) return json(res, 409, { error: 'You already have a character with that name.' });
+      u.chars.push({ id: hex(6), c });
+    }
+    saveAccts();
+    json(res, 200, { id: cur ? cur.id : u.chars[u.chars.length - 1].id, chars: chars(u) });
+  },
+  '/api/chars/del': (b, res) => {
+    const u = needAcct(b, res); if (!u) return;
+    u.chars = u.chars.filter(x => x.id !== cl(b.id, 40));
+    saveAccts();
+    json(res, 200, { chars: chars(u) });
+  },
   '/api/join': (b, res) => {
     const now = Date.now();
     while (fails.length && now - fails[0] > 60000) fails.shift();
@@ -351,7 +455,8 @@ const server = http.createServer(async (req, res) => {
       const fn = routes[u.pathname];
       if (!fn) return json(res, 404, { error: 'Not found.' });
       const b = await readBody(req, u.pathname.startsWith('/api/host/') ? 400000 : 10000);
-      return fn(b && typeof b === 'object' ? b : {}, res);
+      await fn(b && typeof b === 'object' ? b : {}, res);
+      return;
     }
     json(res, 405, { error: 'Not allowed.' });
   } catch (e) {

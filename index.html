@@ -145,9 +145,9 @@ const KEY='table-companion-v1';
 let S={char:{name:'',cls:'',lvl:1,ab:{STR:10,DEX:10,CON:10,INT:10,WIS:10,CHA:10},hp:10,max:10,ac:10,spd:30,inv:'',spells:''},init:{round:1,turn:0,list:[]},notes:[],quests:[],hist:[]};
 try{const r=localStorage.getItem(KEY);if(r){const p=JSON.parse(r);S=Object.assign(S,p);S.char=Object.assign(S.char,p.char||{})}}catch(e){}
 const newChar=()=>({name:'',cls:'',lvl:1,ab:{STR:10,DEX:10,CON:10,INT:10,WIS:10,CHA:10},hp:10,max:10,ac:10,spd:30,inv:'',spells:''});
-// saved characters (up to 5) live in this browser; the one being played is kept in step with the sheet
-const CH={list(){try{const a=JSON.parse(localStorage.getItem('tc-chars')||'[]');return Array.isArray(a)?a.filter(x=>x&&typeof x.id==='string'&&x.c&&typeof x.c==='object').slice(0,5):[]}catch(e){return[]}},put(a){try{localStorage.setItem('tc-chars',JSON.stringify(a.slice(0,5)))}catch(e){}},active:''};
-const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}if(CH.active){const a=CH.list(),x=a.find(z=>z.id===CH.active);if(x){x.c=S.char;CH.put(a)}}if(window.PARTY)PARTY.queue()};
+// accounts live on the host's PC; the browser only keeps the login token. Up to 5 characters per account.
+const ACCT={tok:'',user:'',chars:[],active:'',load(){try{const o=JSON.parse(localStorage.getItem('tc-acct')||'null');if(o&&typeof o.t==='string'){this.tok=o.t.slice(0,300);this.user=String(o.u||'').slice(0,20)}}catch(e){}},store(){try{localStorage.setItem('tc-acct',JSON.stringify({t:this.tok,u:this.user}))}catch(e){}},clear(){this.tok='';this.user='';this.chars=[];this.active='';try{localStorage.removeItem('tc-acct')}catch(e){}}};ACCT.load();
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}if(ACCT.active&&window.PARTY)PARTY.pushChar();if(window.PARTY)PARTY.queue()};
 function openTab(id){document.querySelectorAll('nav button').forEach(b=>b.setAttribute('aria-selected',b.dataset.tab===id));document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===id))}
 const mod=v=>Math.floor((v-10)/2), fm=m=>(m>=0?'+':'')+m, pb=()=>2+Math.floor((S.char.lvl-1)/4);
 const d=n=>1+Math.floor(Math.random()*n);
@@ -255,7 +255,7 @@ $('#msr').addEventListener('input',renderMon);
 // and connect to that server, usually through an invite link that carries the server address.
 const PARTY=window.PARTY=(()=>{
   const SIDES=[4,6,8,10,12,20,100];
-  let mode='idle',avail=null,view=null,msg='',timer=null,draft='',token='',hostKey='',pend=false,cr=false,gen=0,base='',rl={n:1,s:20,m:0,k:'n'},step='code',okCode='',nc={n:'',c:'',l:1},delId='',lastRole='';
+  let mode='idle',avail=null,view=null,msg='',timer=null,draft='',token='',hostKey='',pend=false,cr=false,gen=0,base='',rl={n:1,s:20,m:0,k:'n'},step='code',okCode='',nc={n:'',c:'',l:1},delId='',lastRole='',authTab='login',form={u:'',p:'',p2:''},pt=null;
   const okBase=s=>/^(https:\/\/[a-z0-9.-]+|http:\/\/(localhost|127\.0\.0\.1))(:\d{1,5})?$/i.test(s);
   try{draft=localStorage.getItem('tc-code')||''}catch(e){}
   try{
@@ -354,7 +354,7 @@ const PARTY=window.PARTY=(()=>{
     const c=cl(raw,12).toUpperCase().replace(/[^A-Z0-9]/g,'');
     draft=c;
     if(c.length!==5){say('Enter the 5-character party code.');return}
-    if(!S.char.name.trim()){step='pick';say('Pick or create a character first.');return}
+    if(!S.char.name.trim()){step=ACCT.tok?'pick':'auth';say('Pick or create a character first.');return}
     msg='Joining…';render();
     try{
       const j=await api('/api/join',Object.assign({code:c},mine()));
@@ -362,49 +362,95 @@ const PARTY=window.PARTY=(()=>{
       try{localStorage.setItem('tc-code',c)}catch(e){}
       msg='Connecting…';render();loop('player');
     }catch(e){
-      if(e.status===403||e.status===429){step='code';okCode='';CH.active=''}
-      else if(e.status){step='pick';CH.active=''}
+      if(e.status===403||e.status===429){step='code';okCode='';ACCT.active=''}
+      else if(e.status){step=ACCT.tok?'pick':'auth';ACCT.active=''}
       say(e.status?e.message:'Could not reach the host\'s server. Check the invite link, or ask the host if the server is still running.')
     }
   }
   function leave(text){
     stopLoop();
     if(token){api('/api/leave',{token}).catch(()=>{})}
-    token='';mode='idle';view=null;msg=text||'';step='code';okCode='';CH.active='';render();
+    token='';mode='idle';view=null;msg=text||'';step='code';okCode='';ACCT.active='';render();
   }
+  const apiErr=e=>e.status?e.message:'Could not reach the host\'s server. Check the invite link, or ask the host if the server is still running.';
+  const setChars=l=>{ACCT.chars=arr(l).slice(0,5).filter(x=>x&&x.c&&typeof x.c==='object').map(x=>({id:cl(x.id,40),c:x.c}))};
+  async function loadChars(){const j=await api('/api/chars/list',{token:ACCT.tok});ACCT.user=cl(j.user,20)||ACCT.user;setChars(j.chars)}
   async function check(raw){
     const c=cl(raw,12).toUpperCase().replace(/[^A-Z0-9]/g,'');
     draft=c;
     if(c.length!==5){say('Enter the 5-character party code.');return}
     msg='Checking the code…';render();
-    try{await api('/api/join',{code:c,check:true});okCode=c;step='pick';msg='';render()}
-    catch(e){say(e.status?e.message:'Could not reach the host\'s server. Check the invite link, or ask the host if the server is still running.')}
+    try{
+      await api('/api/join',{code:c,check:true});okCode=c;
+      if(ACCT.tok){try{await loadChars();step='pick';msg='';render();return}catch(e){if(e.status===401)ACCT.clear();else throw e}}
+      step='auth';msg='';render();
+    }catch(e){say(apiErr(e))}
+  }
+  async function authDo(kind){
+    const u=cl(form.u,20).trim(),p=form.p;
+    if(!u||!p){say('Enter a username and password.');return}
+    if(kind==='register'&&p!==form.p2){say('The two passwords do not match.');return}
+    msg=kind==='register'?'Creating your account…':'Logging in…';render();
+    try{
+      const j=await api('/api/'+kind,{code:okCode,user:u,pass:p});
+      form={u:'',p:'',p2:''};ACCT.tok=cl(j.token,300);ACCT.user=cl(j.user,20);ACCT.store();
+      await loadChars();step='pick';msg='';render();
+    }catch(e){
+      form.p='';form.p2='';
+      if(e.status===403){step='code';okCode=''}
+      say(apiErr(e));
+    }
   }
   function play(id){
-    const x=CH.list().find(z=>z.id===id);if(!x)return;
+    const x=ACCT.chars.find(z=>z.id===id);if(!x)return;
     const c=Object.assign(newChar(),x.c);c.ab=Object.assign(newChar().ab,x.c.ab||{});
-    S.char=c;CH.active=id;save();renderChar();join(okCode);
+    S.char=c;ACCT.active=id;save();renderChar();join(okCode);
   }
-  function create(){
+  async function create(){
     const n=cl(nc.n,30).trim();
     if(!n){say('Give your character a name.');return}
-    const a=CH.list();
-    if(a.length>=5){say('You have 5 characters. Delete one to make a new one.');return}
-    if(a.some(x=>String(x.c.name).toLowerCase()===n.toLowerCase())){say('You already have a character with that name.');return}
     const c=newChar();c.name=n;c.cls=cl(nc.c,30);c.lvl=num(nc.l,1,20);
-    const id=Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4);
-    a.push({id,c});CH.put(a);nc={n:'',c:'',l:1};play(id);
+    try{const j=await api('/api/chars/save',{token:ACCT.tok,c});setChars(j.chars);nc={n:'',c:'',l:1};play(j.id)}
+    catch(e){if(e.status===401){ACCT.clear();step='auth'}say(apiErr(e))}
+  }
+  function guest(){
+    const n=cl(nc.n,30).trim();
+    if(!n){say('Give your character a name.');return}
+    const c=newChar();c.name=n;c.cls=cl(nc.c,30);c.lvl=num(nc.l,1,20);
+    S.char=c;ACCT.active='';save();renderChar();join(okCode);
+  }
+  async function delChar(id){
+    try{const j=await api('/api/chars/del',{token:ACCT.tok,id});setChars(j.chars);if(ACCT.active===id)ACCT.active='';render();renderChar()}
+    catch(e){if(e.status===401){ACCT.clear();step='auth'}say(apiErr(e))}
+  }
+  // the sheet edits of an account character are saved to the host's server shortly after you stop typing
+  function pushChar(){
+    clearTimeout(pt);
+    const id=ACCT.active,c=S.char;
+    pt=setTimeout(()=>{if(ACCT.tok&&id)api('/api/chars/save',{token:ACCT.tok,id,c}).then(j=>setChars(j.chars)).catch(()=>{})},800);
   }
   const who=c=>`${esc(c.name||'Unnamed')}<div class="mu" style="font-weight:400">${esc(c.cls||'')}${c.cls?' · ':''}lvl ${num(c.lvl,1,20)}</div>`;
   function slotsHtml(){
     if(role()!=='player')return '';
-    const a=CH.list();
-    return `<div class="card"><h2 style="margin:0 0 8px">My characters (${a.length}/5)</h2>${a.map(x=>`<div class="it"><div class="nm">${who(x.c)}</div>${x.id===CH.active?'<span class="mu">playing</span>':`<button class="danger" data-pty="delc" data-id="${esc(x.id)}">${delId===x.id?'Tap again to delete':'Delete'}</button>`}</div>`).join('')}<p class="mu" style="margin:6px 0 0">Saved in this browser on this device. Leave the party to switch characters or make a new one.</p></div>`;
+    if(!ACCT.tok)return `<div class="card"><b>Guest</b><p class="mu" style="margin:4px 0 0">This character is not saved. Next time, make an account to keep up to 5 characters.</p></div>`;
+    const a=ACCT.chars;
+    return `<div class="card"><h2 style="margin:0 0 8px">${esc(ACCT.user)}: my characters (${a.length}/5)</h2>${a.map(x=>`<div class="it"><div class="nm">${who(x.c)}</div>${x.id===ACCT.active?'<span class="mu">playing</span>':`<button class="danger" data-pty="delc" data-id="${esc(x.id)}">${delId===x.id?'Tap again to delete':'Delete'}</button>`}</div>`).join('')}<p class="mu" style="margin:6px 0 0">Saved on your host's computer. Leave the party to switch characters or make a new one.</p></div>`;
+  }
+  const newCharForm=(btn,label)=>`<div class="row"><label>Name<input id="ncn" maxlength="30" autocomplete="off" value="${esc(nc.n)}"></label><label>Class<input id="ncc" maxlength="30" autocomplete="off" value="${esc(nc.c)}"></label><label style="max-width:90px;min-width:80px">Level<input id="ncl" type="number" min="1" max="20" value="${esc(nc.l)}"></label></div><button class="btn" data-pty="${btn}">${label}</button>`;
+  function authHtml(){
+    const tabs=[['login','Log in'],['reg','Register'],['guest','Play as guest']].map(t=>`<button class="${authTab===t[0]?'btn':'ghost'}" data-pty="tab" data-t="${t[0]}">${t[1]}</button>`).join('');
+    let body;
+    if(authTab==='guest')body=`<p class="mu">Quick start. A guest character is not saved when you leave.</p>${newCharForm('guest','Play as guest')}`;
+    else{
+      const reg=authTab==='reg';
+      body=`<p class="mu">${reg?'Make an account to keep up to 5 characters. It is stored on your host\'s computer, so it works with this host.':'Log in to your account on this host.'}</p><div class="row"><label>Username<input id="au" maxlength="20" autocomplete="username" autocapitalize="none" spellcheck="false" value="${esc(form.u)}"></label><label>Password<input id="ap" type="password" maxlength="100" autocomplete="${reg?'new-password':'current-password'}" value="${esc(form.p)}"></label>${reg?`<label>Repeat password<input id="ap2" type="password" maxlength="100" autocomplete="new-password" value="${esc(form.p2)}"></label>`:''}</div><button class="btn" data-pty="${reg?'register':'login'}">${reg?'Create account':'Log in'}</button>${reg?'<p class="mu" style="margin:8px 0 0">Use a password you do not use anywhere else. 3-20 letters, numbers, - or _ for the username; 8+ characters for the password.</p>':''}`;
+    }
+    return `<div class="card"><h2 style="margin-top:0">Party ${esc(okCode)}</h2><div class="row" style="margin:0 0 10px">${tabs}</div>${body}</div><button class="ghost" data-pty="back">Back</button>`;
   }
   function pickHtml(){
-    const a=CH.list();
-    return `<div class="card"><h2 style="margin-top:0">Choose your character</h2><p class="mu">Party <b>${esc(okCode)}</b>. Your name, class, HP and AC are shared with the party. Characters are saved in this browser (up to 5).</p>${a.length?a.map(x=>`<div class="it"><div class="nm">${who(x.c)}</div><button class="btn" data-pty="play" data-id="${esc(x.id)}">Play</button><button class="danger" data-pty="delc" data-id="${esc(x.id)}">${delId===x.id?'Tap again':'Delete'}</button></div>`).join(''):'<p class="mu">No saved characters yet. Make your first one below.</p>'}</div>`+
-      (a.length<5?`<div class="card"><h2 style="margin-top:0">New character</h2><div class="row"><label>Name<input id="ncn" maxlength="30" autocomplete="off" value="${esc(nc.n)}"></label><label>Class<input id="ncc" maxlength="30" autocomplete="off" value="${esc(nc.c)}"></label><label style="max-width:90px;min-width:80px">Level<input id="ncl" type="number" min="1" max="20" value="${esc(nc.l)}"></label></div><button class="btn" data-pty="create">Create and join</button><p class="mu" style="margin:8px 0 0">You can fill in the rest of the sheet on the Character tab.</p></div>`:'<div class="card"><p class="mu" style="margin:0">You have 5 characters. Delete one to make a new one.</p></div>')+
+    const a=ACCT.chars;
+    return `<div class="card"><div class="row" style="margin:0 0 6px"><h2 style="margin:0;flex:1">Choose your character</h2><button class="ghost" data-pty="logout">Log out ${esc(ACCT.user)}</button></div><p class="mu">Party <b>${esc(okCode)}</b>. Your name, class, HP and AC are shared with the party. Up to 5 characters per account.</p>${a.length?a.map(x=>`<div class="it"><div class="nm">${who(x.c)}</div><button class="btn" data-pty="play" data-id="${esc(x.id)}">Play</button><button class="danger" data-pty="delc" data-id="${esc(x.id)}">${delId===x.id?'Tap again':'Delete'}</button></div>`).join(''):'<p class="mu">No saved characters yet. Make your first one below.</p>'}</div>`+
+      (a.length<5?`<div class="card"><h2 style="margin-top:0">New character</h2>${newCharForm('create','Create and join')}<p class="mu" style="margin:8px 0 0">You can fill in the rest of the sheet on the Character tab.</p></div>`:'<div class="card"><p class="mu" style="margin:0">You have 5 characters. Delete one to make a new one.</p></div>')+
       '<button class="ghost" data-pty="back">Back</button>';
   }
   function ping(){
@@ -457,9 +503,11 @@ const PARTY=window.PARTY=(()=>{
           ?`<div class="card"><h2 style="margin-top:0">Can't reach the host</h2><p class="mu">The server at <b>${esc(where())}</b> did not answer. The host may have stopped it, or their link changed. Ask them for a new invite link.</p><button class="ghost" data-pty="forget">Forget this server</button></div>${st}`
           :`<div class="card"><h2 style="margin-top:0">Party play</h2><p class="mu">Parties run on the host's own computer. Players: open the invite link your host sent you. Hosts: run <b>start.bat</b> from your DND folder and use the host link it opens.</p></div>${st}`;
       }else{
-        el.innerHTML=step==='pick'&&okCode
+        el.innerHTML=step==='pick'&&okCode&&ACCT.tok
           ?pickHtml()+st
-          :`<div class="card"><h2 style="margin-top:0">Join the party</h2>${base?`<p class="mu">Host's server: <b>${esc(where())}</b></p>`:''}<p class="mu">Enter the party code from your host. Then you pick or create your character.</p><div class="row"><label>Party code<input id="pcode" maxlength="5" autocapitalize="characters" autocomplete="off" spellcheck="false" value="${esc(draft)}"></label><button class="btn" data-pty="check">Continue</button></div>${base?'<button class="ghost" data-pty="forget">Use a different server</button>':''}</div>${st}`;
+          :step==='auth'&&okCode
+          ?authHtml()+st
+          :`<div class="card"><h2 style="margin-top:0">Join the party</h2>${base?`<p class="mu">Host's server: <b>${esc(where())}</b></p>`:''}<p class="mu">Enter the party code from your host. Then log in, register or play as a guest.</p><div class="row"><label>Party code<input id="pcode" maxlength="5" autocapitalize="characters" autocomplete="off" spellcheck="false" value="${esc(draft)}"></label><button class="btn" data-pty="check">Continue</button></div>${base?'<button class="ghost" data-pty="forget">Use a different server</button>':''}</div>${st}`;
       }
     }else if(mode==='host'){
       el.innerHTML=`<div class="card"><div class="mu" style="text-align:center">Party code</div><div class="pcode" id="pshow">${esc(view?view.code:'…')}</div><div class="row" style="justify-content:center"><button class="ghost" data-pty="copy">Copy code</button><button class="ghost" data-pty="reset">${cr?'Tap again to remove everyone':'New code'}</button></div><p class="mu" style="text-align:center;margin:0">Turn order shows names only, never monster health. Share quests and notes from the Campaign tab. Closing the server window ends the party.</p></div>${view?inviteCard(view):''}${st}${view?bodyShared(view,true):''}`;
@@ -477,10 +525,15 @@ const PARTY=window.PARTY=(()=>{
     if(D.pty==='check'){const i=document.getElementById('pcode');check(i?i.value:draft)}
     else if(D.pty==='play')play(D.id);
     else if(D.pty==='create')create();
+    else if(D.pty==='guest')guest();
+    else if(D.pty==='login')authDo('login');
+    else if(D.pty==='register')authDo('register');
+    else if(D.pty==='tab'){authTab=['login','reg','guest'].includes(D.t)?D.t:'login';msg='';render()}
+    else if(D.pty==='logout'){ACCT.clear();step='auth';msg='';render()}
     else if(D.pty==='back'){step='code';okCode='';msg='';render()}
     else if(D.pty==='delc'){
       if(delId!==D.id){delId=D.id;render();renderChar();setTimeout(()=>{if(delId===D.id){delId='';render();renderChar()}},4000);return}
-      delId='';CH.put(CH.list().filter(x=>x.id!==D.id));if(CH.active===D.id)CH.active='';render();renderChar();
+      delId='';delChar(D.id);
     }
     else if(D.pty==='leave')leave('');
     else if(D.pty==='forget'){base='';try{localStorage.removeItem('tc-srv')}catch(e){}msg='';ping()}
@@ -503,12 +556,17 @@ const PARTY=window.PARTY=(()=>{
       }catch(err){fail(err)}
     }
   });
-  document.addEventListener('input',e=>{const i=e.target.id;if(i==='pcode')draft=e.target.value;else if(i==='ncn')nc.n=e.target.value;else if(i==='ncc')nc.c=e.target.value;else if(i==='ncl')nc.l=e.target.value});
-  document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='pcode')check(e.target.value)});
+  document.addEventListener('input',e=>{const i=e.target.id;if(i==='pcode')draft=e.target.value;else if(i==='ncn')nc.n=e.target.value;else if(i==='ncc')nc.c=e.target.value;else if(i==='ncl')nc.l=e.target.value;else if(i==='au')form.u=e.target.value;else if(i==='ap')form.p=e.target.value;else if(i==='ap2')form.p2=e.target.value});
+  document.addEventListener('keydown',e=>{if(e.key!=='Enter')return;const i=e.target.id;
+    if(i==='pcode')check(e.target.value);
+    else if(i==='au'||i==='ap'||i==='ap2')authDo(authTab==='reg'?'register':'login');
+    else if(i==='ncn'||i==='ncc'||i==='ncl'){if(step==='pick')create();else if(authTab==='guest')guest()}
+  });
   document.addEventListener('change',e=>{if(e.target.closest&&e.target.closest('#party'))readRl()});
   document.addEventListener('focusout',e=>{if(pend&&e.target.closest&&e.target.closest('#party'))setTimeout(render,0)});
+  window.addEventListener('hashchange',()=>{if(/(^|[#&])s=/.test(location.hash))location.reload()});
   ping();
-  return {queue,render,slotsHtml,role,get mode(){return mode}};
+  return {queue,render,slotsHtml,role,pushChar,get mode(){return mode}};
 })();
 renderChar();renderCombat();renderCamp();renderHist();renderMon();PARTY.render();
 </script>
