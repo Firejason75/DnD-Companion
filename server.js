@@ -39,7 +39,7 @@ process.on('uncaughtException', e => { logE('Crash: ' + (e && e.stack || e)); pr
 process.on('unhandledRejection', e => logE('Unhandled error: ' + (e && e.stack || e)));
 
 const PORT = Number(process.env.PORT) || 3000;
-const SITE = process.env.SITE_URL || 'https://firejason75.github.io/DnD-Companion/';
+const SITE = process.env.SITE_URL || 'https://firejason75.github.io/dnd/';
 const AL = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const MAXP = 8;
 const SIDES = [4, 6, 8, 10, 12, 20, 100];
