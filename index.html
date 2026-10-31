@@ -147,7 +147,7 @@ try{const r=localStorage.getItem(KEY);if(r){const p=JSON.parse(r);S=Object.assig
 const newChar=()=>({name:'',cls:'',lvl:1,ab:{STR:10,DEX:10,CON:10,INT:10,WIS:10,CHA:10},hp:10,max:10,ac:10,spd:30,inv:'',spells:''});
 // accounts live on the host's PC; the browser only keeps the login token. Up to 5 characters per account.
 const ACCT={tok:'',user:'',chars:[],active:'',load(){try{const o=JSON.parse(localStorage.getItem('tc-acct')||'null');if(o&&typeof o.t==='string'){this.tok=o.t.slice(0,300);this.user=String(o.u||'').slice(0,20)}}catch(e){}},store(){try{localStorage.setItem('tc-acct',JSON.stringify({t:this.tok,u:this.user}))}catch(e){}},clear(){this.tok='';this.user='';this.chars=[];this.active='';try{localStorage.removeItem('tc-acct')}catch(e){}}};ACCT.load();
-const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}if(ACCT.active&&window.PARTY)PARTY.pushChar();if(window.PARTY)PARTY.queue()};
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}if(window.PARTY)PARTY.queue()};
 function openTab(id){document.querySelectorAll('nav button').forEach(b=>b.setAttribute('aria-selected',b.dataset.tab===id));document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===id))}
 const mod=v=>Math.floor((v-10)/2), fm=m=>(m>=0?'+':'')+m, pb=()=>2+Math.floor((S.char.lvl-1)/4);
 const d=n=>1+Math.floor(Math.random()*n);
@@ -171,6 +171,7 @@ function renderHist(){$('#hist').innerHTML=S.hist.length?S.hist.map(h=>`<div>${e
 
 // Character
 function renderChar(){
+  if(window.PARTY&&PARTY.role()==='player'){PARTY.renderMine();return}
   const c=S.char;
   $('#char').innerHTML=(window.PARTY?PARTY.slotsHtml():'')+`<div class="card"><div class="row">
   <label>Name<input data-c="name" value="${esc(c.name)}"></label>
@@ -255,7 +256,7 @@ $('#msr').addEventListener('input',renderMon);
 // and connect to that server, usually through an invite link that carries the server address.
 const PARTY=window.PARTY=(()=>{
   const SIDES=[4,6,8,10,12,20,100];
-  let mode='idle',avail=null,view=null,msg='',timer=null,draft='',token='',hostKey='',pend=false,cr=false,gen=0,base='',rl={n:1,s:20,m:0,k:'n'},step='code',okCode='',nc={n:'',c:'',l:1},delId='',lastRole='',authTab='login',form={u:'',p:'',p2:''},pt=null;
+  let mode='idle',avail=null,view=null,msg='',timer=null,draft='',token='',hostKey='',pend=false,cr=false,gen=0,base='',rl={n:1,s:20,m:0,k:'n'},step='code',okCode='',nc={n:'',c:'',l:1},delId='',lastRole='',authTab='login',form={u:'',p:'',p2:''},myId='',pendM=false,editId='',ed={},hi={n:'',q:1},gi={n:'',q:1};
   const okBase=s=>/^(https:\/\/[a-z0-9.-]+|http:\/\/(localhost|127\.0\.0\.1))(:\d{1,5})?$/i.test(s);
   try{draft=localStorage.getItem('tc-code')||''}catch(e){}
   try{
@@ -305,7 +306,8 @@ const PARTY=window.PARTY=(()=>{
     const o={code:cl(m.code,8),round:num(m.round,1,9999),turn:num(m.turn,0,999),
       feed:arr(m.feed).slice(0,30).map(x=>({w:cl(x&&x.w,30),t:cl(x&&x.t,140),hid:isHost&&!!(x&&x.hid)})),
       init:arr(m.init).slice(0,60).map(x=>({n:cl(x&&x.n,40),i:num(x&&x.i,-99,99),down:!!(x&&x.down)})),
-      roster:arr(m.roster).slice(0,16).map(x=>Object.assign({id:isHost?cl(x&&x.id,40):'',on:!(x&&x.on===false)},info(x||{}))),
+      roster:arr(m.roster).slice(0,16).map(x=>Object.assign({id:cl(x&&x.id,40),on:!(x&&x.on===false)},info(x||{}),isHost&&x&&x.c?{c:cleanChar(x.c)}:{})),
+      me:m.me?cleanChar(m.me):null,ground:cleanItems(m.ground),
       quests:arr(m.quests).slice(0,60).map(x=>({t:cl(x&&x.t,200),d:!!(x&&x.d)})),
       notes:arr(m.notes).slice(0,60).map(x=>({t:cl(x&&x.t,100),b:cl(x&&x.b,3000)}))};
     if(isHost){o.site=cl(m.site,300);o.publicUrl=okBase(cl(m.publicUrl,200))?cl(m.publicUrl,200):''}
@@ -317,7 +319,6 @@ const PARTY=window.PARTY=(()=>{
     clearTimeout(timer);
     timer=setTimeout(()=>{
       if(mode==='host')api('/api/host/state',Object.assign({key:hostKey},shared())).catch(()=>{});
-      else if(mode==='player')api('/api/upd',Object.assign({token},mine())).catch(()=>{});
     },200);
   }
   function dead(kind){
@@ -350,15 +351,14 @@ const PARTY=window.PARTY=(()=>{
     }
   }
   function startHost(){mode='host';view=null;msg='Connecting to your server…';render();loop('host')}
-  async function join(raw){
+  async function join(raw,extra){
     const c=cl(raw,12).toUpperCase().replace(/[^A-Z0-9]/g,'');
     draft=c;
     if(c.length!==5){say('Enter the 5-character party code.');return}
-    if(!S.char.name.trim()){step=ACCT.tok?'pick':'auth';say('Pick or create a character first.');return}
     msg='Joining…';render();
     try{
-      const j=await api('/api/join',Object.assign({code:c},mine()));
-      token=j.token;mode='player';view=null;
+      const j=await api('/api/join',Object.assign({code:c},extra||{}));
+      token=j.token;myId=cl(j.id,40);mode='player';view=null;
       try{localStorage.setItem('tc-code',c)}catch(e){}
       msg='Connecting…';render();loop('player');
     }catch(e){
@@ -370,7 +370,7 @@ const PARTY=window.PARTY=(()=>{
   function leave(text){
     stopLoop();
     if(token){api('/api/leave',{token}).catch(()=>{})}
-    token='';mode='idle';view=null;msg=text||'';step='code';okCode='';ACCT.active='';render();
+    token='';myId='';mode='idle';view=null;msg=text||'';step='code';okCode='';ACCT.active='';render();
   }
   const apiErr=e=>e.status?e.message:'Could not reach the host\'s server. Check the invite link, or ask the host if the server is still running.';
   const setChars=l=>{ACCT.chars=arr(l).slice(0,5).filter(x=>x&&x.c&&typeof x.c==='object').map(x=>({id:cl(x.id,40),c:x.c}))};
@@ -403,31 +403,48 @@ const PARTY=window.PARTY=(()=>{
   }
   function play(id){
     const x=ACCT.chars.find(z=>z.id===id);if(!x)return;
-    const c=Object.assign(newChar(),x.c);c.ab=Object.assign(newChar().ab,x.c.ab||{});
-    S.char=c;ACCT.active=id;save();renderChar();join(okCode);
+    ACCT.active=id;join(okCode,{token:ACCT.tok,id});
   }
   async function create(){
     const n=cl(nc.n,30).trim();
     if(!n){say('Give your character a name.');return}
-    const c=newChar();c.name=n;c.cls=cl(nc.c,30);c.lvl=num(nc.l,1,20);
-    try{const j=await api('/api/chars/save',{token:ACCT.tok,c});setChars(j.chars);nc={n:'',c:'',l:1};play(j.id)}
+    try{const j=await api('/api/chars/save',{token:ACCT.tok,c:{name:n,cls:cl(nc.c,30)}});setChars(j.chars);nc={n:'',c:'',l:1};play(j.id)}
     catch(e){if(e.status===401){ACCT.clear();step='auth'}say(apiErr(e))}
   }
   function guest(){
     const n=cl(nc.n,30).trim();
     if(!n){say('Give your character a name.');return}
-    const c=newChar();c.name=n;c.cls=cl(nc.c,30);c.lvl=num(nc.l,1,20);
-    S.char=c;ACCT.active='';save();renderChar();join(okCode);
+    ACCT.active='';join(okCode,{guest:{name:n,cls:cl(nc.c,30)}});
   }
   async function delChar(id){
     try{const j=await api('/api/chars/del',{token:ACCT.tok,id});setChars(j.chars);if(ACCT.active===id)ACCT.active='';render();renderChar()}
     catch(e){if(e.status===401){ACCT.clear();step='auth'}say(apiErr(e))}
   }
-  // the sheet edits of an account character are saved to the host's server shortly after you stop typing
-  function pushChar(){
-    clearTimeout(pt);
-    const id=ACCT.active,c=S.char;
-    pt=setTimeout(()=>{if(ACCT.tok&&id)api('/api/chars/save',{token:ACCT.tok,id,c}).then(j=>setChars(j.chars)).catch(()=>{})},800);
+  const ABK=['STR','DEX','CON','INT','WIS','CHA'];
+  const cleanItems=a=>arr(a).slice(0,40).map(x=>({id:cl(x&&x.id,20),n:cl(x&&x.n,60),q:num(x&&x.q,1,999)}));
+  const cleanChar=m=>{m=m&&typeof m==='object'?m:{};const ab=m.ab&&typeof m.ab==='object'?m.ab:{},A={};for(const k of ABK)A[k]=num(ab[k]==null?10:ab[k],1,30);return Object.assign(info(m),{spd:num(m.spd,0,999),ab:A,items:cleanItems(m.items)})};
+  // what a player sees of their own character: everything, but read-only. Only items can be moved.
+  function mineHtml(){
+    const c=view&&view.me,head=slotsHtml()+(msg?`<div class="mu" role="status" style="margin:0 0 8px">${esc(msg)}</div>`:'');
+    if(!c)return head+'<p class="mu">Loading your character…</p>';
+    const pbv=Math.ceil(c.lvl/4)+1,pct=c.max>0?Math.max(0,Math.min(100,Math.round(c.hp/c.max*100))):0;
+    const others=view.roster.filter(r=>r.id&&r.id!==myId);
+    const opts=others.map(r=>`<option value="${esc(r.id)}">${esc(r.name)}${r.on?'':' (offline)'}</option>`).join('');
+    const items=c.items.length?c.items.map(it=>`<div class="it" style="flex-wrap:wrap"><div class="nm">${esc(it.n)} <span class="mu">×${it.q}</span></div><input type="number" min="1" max="${it.q}" value="1" id="iq-${esc(it.id)}" aria-label="Amount" style="width:64px">${others.length?`<select id="ig-${esc(it.id)}" aria-label="Give to" style="width:auto;max-width:140px">${opts}</select><button class="ghost" data-pty="give" data-id="${esc(it.id)}">Give</button>`:''}<button class="ghost" data-pty="drop" data-id="${esc(it.id)}">Drop</button></div>`).join(''):'<p class="mu" style="margin:0">Your pack is empty. Pick things up from the floor on the Party tab.</p>';
+    return head+`<div class="card"><b style="font-size:1.2rem">${esc(c.name)}</b> <span class="mu">${esc(c.cls)}${c.cls?' · ':''}level ${c.lvl} · proficiency ${fm(pbv)}</span><p class="mu" style="margin:6px 0 0">Only your host can change your level, health and abilities.</p></div><h2>Abilities</h2><div class="abs">${ABK.map(k=>`<div class="ab"><span>${k}</span><b style="font-size:1.3rem;color:var(--tx)">${c.ab[k]}</b><b>${fm(mod(c.ab[k]))}</b><button class="ghost" data-pty="pchk" data-k="${k}">Roll ${k} check</button></div>`).join('')}</div><div class="mu" id="chkres" style="margin-top:6px;min-height:1.4em"></div><h2>Health and defense</h2><div class="card"><div>HP <b>${c.hp}/${c.max}</b> · AC <b>${c.ac}</b> · Speed <b>${c.spd}</b></div><div class="bar"><i class="${pct<=25?'low':''}" style="width:${pct}%"></i></div></div><h2>Inventory</h2><div class="card">${items}</div>`;
+  }
+  function renderMine(){
+    const el=document.getElementById('char');if(!el)return;
+    const ae=document.activeElement;
+    if(ae&&el.contains(ae)&&(ae.tagName==='INPUT'||ae.tagName==='SELECT')){pendM=true;return}
+    pendM=false;el.innerHTML=mineHtml();
+  }
+  // the host edits a player's sheet here
+  const ed0=c=>Object.assign({cls:c.cls,lvl:c.lvl,hp:c.hp,max:c.max,ac:c.ac,spd:c.spd},c.ab);
+  function editorHtml(r){
+    const f=(k,l,t)=>`<label style="min-width:80px">${l}<input data-e="${k}" ${t==='text'?'maxlength="30"':'type="number"'} value="${esc(ed[k]==null?'':ed[k])}"></label>`;
+    const its=r.c.items.length?r.c.items.map(it=>`<div class="it"><div class="nm">${esc(it.n)} <span class="mu">×${it.q}</span></div><button class="danger" data-pty="irem" data-pid="${esc(r.id)}" data-id="${esc(it.id)}" aria-label="Remove ${esc(it.n)}">✕</button></div>`).join(''):'<p class="mu" style="margin:4px 0">No items.</p>';
+    return `<div class="card" style="margin:8px 0 0"><div class="row">${f('cls','Class','text')}${f('lvl','Level')}${f('hp','HP')}${f('max','Max HP')}${f('ac','AC')}${f('spd','Speed')}</div><div class="row">${ABK.map(k=>f(k,k)).join('')}</div><div class="row" style="margin:0"><button class="btn" data-pty="esave" data-id="${esc(r.id)}">Save sheet</button></div><h2 style="font-size:1rem">Items</h2>${its}<div class="row" style="margin:8px 0 0"><label>Give item<input id="hin" maxlength="60" autocomplete="off" value="${esc(hi.n)}"></label><label style="max-width:90px;min-width:70px">Amount<input id="hiq" type="number" min="1" max="999" value="${esc(hi.q)}"></label><button class="btn" data-pty="iadd" data-id="${esc(r.id)}">Give</button></div></div>`;
   }
   const who=c=>`${esc(c.name||'Unnamed')}<div class="mu" style="font-weight:400">${esc(c.cls||'')}${c.cls?' · ':''}lvl ${num(c.lvl,1,20)}</div>`;
   function slotsHtml(){
@@ -436,11 +453,11 @@ const PARTY=window.PARTY=(()=>{
     const a=ACCT.chars;
     return `<div class="card"><h2 style="margin:0 0 8px">${esc(ACCT.user)}: my characters (${a.length}/5)</h2>${a.map(x=>`<div class="it"><div class="nm">${who(x.c)}</div>${x.id===ACCT.active?'<span class="mu">playing</span>':`<button class="danger" data-pty="delc" data-id="${esc(x.id)}">${delId===x.id?'Tap again to delete':'Delete'}</button>`}</div>`).join('')}<p class="mu" style="margin:6px 0 0">Saved on your host's computer. Leave the party to switch characters or make a new one.</p></div>`;
   }
-  const newCharForm=(btn,label)=>`<div class="row"><label>Name<input id="ncn" maxlength="30" autocomplete="off" value="${esc(nc.n)}"></label><label>Class<input id="ncc" maxlength="30" autocomplete="off" value="${esc(nc.c)}"></label><label style="max-width:90px;min-width:80px">Level<input id="ncl" type="number" min="1" max="20" value="${esc(nc.l)}"></label></div><button class="btn" data-pty="${btn}">${label}</button>`;
+  const newCharForm=(btn,label)=>`<div class="row"><label>Name<input id="ncn" maxlength="30" autocomplete="off" value="${esc(nc.n)}"></label><label>Class<input id="ncc" maxlength="30" autocomplete="off" value="${esc(nc.c)}"></label></div><button class="btn" data-pty="${btn}">${label}</button>`;
   function authHtml(){
     const tabs=[['login','Log in'],['reg','Register'],['guest','Play as guest']].map(t=>`<button class="${authTab===t[0]?'btn':'ghost'}" data-pty="tab" data-t="${t[0]}">${t[1]}</button>`).join('');
     let body;
-    if(authTab==='guest')body=`<p class="mu">Quick start. A guest character is not saved when you leave.</p>${newCharForm('guest','Play as guest')}`;
+    if(authTab==='guest')body=`<p class="mu">Quick start. A guest character is not saved when you leave. Your host sets its stats.</p>${newCharForm('guest','Play as guest')}`;
     else{
       const reg=authTab==='reg';
       body=`<p class="mu">${reg?'Make an account to keep up to 5 characters. It is stored on your host\'s computer, so it works with this host.':'Log in to your account on this host.'}</p><div class="row"><label>Username<input id="au" maxlength="20" autocomplete="username" autocapitalize="none" spellcheck="false" value="${esc(form.u)}"></label><label>Password<input id="ap" type="password" maxlength="100" autocomplete="${reg?'new-password':'current-password'}" value="${esc(form.p)}"></label>${reg?`<label>Repeat password<input id="ap2" type="password" maxlength="100" autocomplete="new-password" value="${esc(form.p2)}"></label>`:''}</div><button class="btn" data-pty="${reg?'register':'login'}">${reg?'Create account':'Log in'}</button>${reg?'<p class="mu" style="margin:8px 0 0">Use a password you do not use anywhere else. 3-20 letters, numbers, - or _ for the username; 8+ characters for the password.</p>':''}`;
@@ -450,7 +467,7 @@ const PARTY=window.PARTY=(()=>{
   function pickHtml(){
     const a=ACCT.chars;
     return `<div class="card"><div class="row" style="margin:0 0 6px"><h2 style="margin:0;flex:1">Choose your character</h2><button class="ghost" data-pty="logout">Log out ${esc(ACCT.user)}</button></div><p class="mu">Party <b>${esc(okCode)}</b>. Your name, class, HP and AC are shared with the party. Up to 5 characters per account.</p>${a.length?a.map(x=>`<div class="it"><div class="nm">${who(x.c)}</div><button class="btn" data-pty="play" data-id="${esc(x.id)}">Play</button><button class="danger" data-pty="delc" data-id="${esc(x.id)}">${delId===x.id?'Tap again':'Delete'}</button></div>`).join(''):'<p class="mu">No saved characters yet. Make your first one below.</p>'}</div>`+
-      (a.length<5?`<div class="card"><h2 style="margin-top:0">New character</h2>${newCharForm('create','Create and join')}<p class="mu" style="margin:8px 0 0">You can fill in the rest of the sheet on the Character tab.</p></div>`:'<div class="card"><p class="mu" style="margin:0">You have 5 characters. Delete one to make a new one.</p></div>')+
+      (a.length<5?`<div class="card"><h2 style="margin-top:0">New character</h2>${newCharForm('create','Create and join')}<p class="mu" style="margin:8px 0 0">Your host sets your level, health and abilities.</p></div>`:'<div class="card"><p class="mu" style="margin:0">You have 5 characters. Delete one to make a new one.</p></div>')+
       '<button class="ghost" data-pty="back">Back</button>';
   }
   function ping(){
@@ -477,11 +494,12 @@ const PARTY=window.PARTY=(()=>{
     const ro=v.roster.length?v.roster.map(r=>{
       const pct=r.max>0?Math.max(0,Math.min(100,Math.round(r.hp/r.max*100))):0;
       return `<div class="pm ${r.on?'':'off'}"><div class="top"><b>${esc(r.name)}</b><span class="mu">${esc(r.cls)}${r.cls?' ':''}${r.lvl?'lvl '+r.lvl:''}${r.on?'':' · offline'}</span>${isHost?`<button class="danger" data-pty="kick" data-id="${esc(r.id)}" aria-label="Remove ${esc(r.name)}">✕</button>`:''}</div>
-      <div>HP ${r.hp}/${r.max} · AC ${r.ac}</div><div class="bar"><i class="${pct<=25?'low':''}" style="width:${pct}%"></i></div></div>`}).join(''):'<p class="mu">No players have joined yet.</p>';
+      <div>HP ${r.hp}/${r.max} · AC ${r.ac}</div><div class="bar"><i class="${pct<=25?'low':''}" style="width:${pct}%"></i></div>${isHost&&r.c?`<div class="row" style="margin:8px 0 0">${[-5,-1,1,5].map(d=>`<button class="ghost" data-pty="hp" data-id="${esc(r.id)}" data-d="${d}">${d>0?'+':''}${d} HP</button>`).join('')}<button class="ghost" data-pty="edit" data-id="${esc(r.id)}">${editId===r.id?'Close sheet':'Edit sheet'}</button></div>${editId===r.id?editorHtml(r):''}`:''}</div>`}).join(''):'<p class="mu">No players have joined yet.</p>';
     const ini=v.init.length?v.init.map((x,n)=>`<div class="it ${n===tn?'cur':''}"><div class="nm">${esc(x.n)}</div><span class="mu">${x.down?'down · ':''}${x.i}</span></div>`).join(''):'<p class="mu">No encounter running.</p>';
     const qs=v.quests.length?v.quests.map(q=>`<div class="q"><span class="${q.d?'done':''}">${q.d?'✓ ':''}${esc(q.t)}</span></div>`).join(''):'<p class="mu">Nothing shared yet.</p>';
     const ns=v.notes.length?v.notes.map(n=>`<details><summary>${esc(n.t||'Untitled')}</summary><p style="white-space:pre-wrap">${esc(n.b)}</p></details>`).join(''):'<p class="mu">Nothing shared yet.</p>';
-    return rollCard(isHost)+feedHtml(v)+`<h2>Party</h2>${ro}<h2>Turn order · round ${v.round}</h2>${ini}<h2>Quests</h2><div class="card">${qs}</div><h2>${isHost?'Shared notes':'Notes from the host'}</h2><div class="card">${ns}</div>`;
+    const gr=`<h2>On the floor</h2><div class="card">${v.ground.length?v.ground.map(g=>`<div class="it" style="flex-wrap:wrap"><div class="nm">${esc(g.n)} <span class="mu">×${g.q}</span></div>${isHost?`<button class="danger" data-pty="gdel" data-id="${esc(g.id)}" aria-label="Remove ${esc(g.n)}">✕</button>`:`<input type="number" min="1" max="${g.q}" value="1" id="gq-${esc(g.id)}" style="width:64px" aria-label="Amount"><button class="btn" data-pty="pick" data-id="${esc(g.id)}">Pick up</button>`}</div>`).join(''):'<p class="mu" style="margin:0">Nothing on the floor.</p>'}${isHost?`<div class="row" style="margin:8px 0 0"><label>Item<input id="gin" maxlength="60" autocomplete="off" value="${esc(gi.n)}"></label><label style="max-width:90px;min-width:70px">Amount<input id="giq" type="number" min="1" max="999" value="${esc(gi.q)}"></label><button class="btn" data-pty="gadd">Put on floor</button></div>`:''}</div>`;
+    return rollCard(isHost)+feedHtml(v)+gr+`<h2>Party</h2>${ro}<h2>Turn order · round ${v.round}</h2>${ini}<h2>Quests</h2><div class="card">${qs}</div><h2>${isHost?'Shared notes':'Notes from the host'}</h2><div class="card">${ns}</div>`;
   }
   const inviteLink=v=>v&&v.publicUrl&&v.site?v.site+'#s='+encodeURIComponent(v.publicUrl)+'&c='+v.code:'';
   function inviteCard(v){
@@ -491,6 +509,7 @@ const PARTY=window.PARTY=(()=>{
   }
   function render(){
     applyRole();
+    if(role()==='player')renderMine();
     const el=document.getElementById('party');if(!el)return;
     const ae=document.activeElement;
     if(mode!=='idle'&&ae&&el.contains(ae)&&(ae.tagName==='INPUT'||ae.tagName==='SELECT')){pend=true;return}
@@ -536,6 +555,22 @@ const PARTY=window.PARTY=(()=>{
       delId='';delChar(D.id);
     }
     else if(D.pty==='leave')leave('');
+    else if(D.pty==='pchk'){const c=view&&view.me;if(c&&c.ab[D.k]!=null){const r=rollDice(1,20,mod(c.ab[D.k]),null,D.k+' check');const o=document.getElementById('chkres');if(o)o.textContent=D.k+' check: '+r}}
+    else if(D.pty==='drop'||D.pty==='give'||D.pty==='pick'){
+      const g=id=>document.getElementById(id),v=id=>{const e=g(id);return e?e.value:''};
+      const pk=D.pty==='pick';
+      try{await api('/api/inv',{token,op:D.pty==='pick'?'pickup':D.pty,id:D.id,q:num(v((pk?'gq-':'iq-')+D.id)||1,1,999),to:D.pty==='give'?v('ig-'+D.id):undefined})}catch(err){fail(err)}
+    }
+    else if(D.pty==='hp'){try{await api('/api/host/hp',{key:hostKey,id:D.id,d:+D.d})}catch(err){fail(err)}}
+    else if(D.pty==='edit'){if(editId===D.id){editId=''}else{const r=view&&view.roster.find(x=>x.id===D.id);if(r&&r.c){editId=D.id;ed=ed0(r.c);hi={n:'',q:1}}}render()}
+    else if(D.pty==='esave'){
+      const c={cls:ed.cls,lvl:ed.lvl,hp:ed.hp,max:ed.max,ac:ed.ac,spd:ed.spd,ab:{}};for(const k of ABK)c.ab[k]=ed[k];
+      try{await api('/api/host/char',{key:hostKey,id:D.id,c});say('Sheet saved.')}catch(err){fail(err)}
+    }
+    else if(D.pty==='iadd'){try{await api('/api/host/item',{key:hostKey,to:D.id,op:'add',n:hi.n,q:hi.q});hi={n:'',q:1};say('')}catch(err){fail(err)}}
+    else if(D.pty==='irem'){try{await api('/api/host/item',{key:hostKey,to:D.pid,op:'remove',id:D.id})}catch(err){fail(err)}}
+    else if(D.pty==='gadd'){try{await api('/api/host/item',{key:hostKey,to:'ground',op:'add',n:gi.n,q:gi.q});gi={n:'',q:1};say('')}catch(err){fail(err)}}
+    else if(D.pty==='gdel'){try{await api('/api/host/item',{key:hostKey,to:'ground',op:'remove',id:D.id})}catch(err){fail(err)}}
     else if(D.pty==='forget'){base='';try{localStorage.removeItem('tc-srv')}catch(e){}msg='';ping()}
     else if(D.pty==='kick'){try{await api('/api/host/kick',{key:hostKey,id:D.id})}catch(err){fail(err)}}
     else if(D.pty==='reset'){
@@ -556,17 +591,17 @@ const PARTY=window.PARTY=(()=>{
       }catch(err){fail(err)}
     }
   });
-  document.addEventListener('input',e=>{const i=e.target.id;if(i==='pcode')draft=e.target.value;else if(i==='ncn')nc.n=e.target.value;else if(i==='ncc')nc.c=e.target.value;else if(i==='ncl')nc.l=e.target.value;else if(i==='au')form.u=e.target.value;else if(i==='ap')form.p=e.target.value;else if(i==='ap2')form.p2=e.target.value});
+  document.addEventListener('input',e=>{const i=e.target.id;if(i==='pcode')draft=e.target.value;else if(i==='ncn')nc.n=e.target.value;else if(i==='ncc')nc.c=e.target.value;else if(i==='au')form.u=e.target.value;else if(i==='ap')form.p=e.target.value;else if(i==='ap2')form.p2=e.target.value;else if(i==='hin')hi.n=e.target.value;else if(i==='hiq')hi.q=e.target.value;else if(i==='gin')gi.n=e.target.value;else if(i==='giq')gi.q=e.target.value;else if(e.target.dataset&&e.target.dataset.e!==undefined)ed[e.target.dataset.e]=e.target.value});
   document.addEventListener('keydown',e=>{if(e.key!=='Enter')return;const i=e.target.id;
     if(i==='pcode')check(e.target.value);
     else if(i==='au'||i==='ap'||i==='ap2')authDo(authTab==='reg'?'register':'login');
-    else if(i==='ncn'||i==='ncc'||i==='ncl'){if(step==='pick')create();else if(authTab==='guest')guest()}
+    else if(i==='ncn'||i==='ncc'){if(step==='pick')create();else if(authTab==='guest')guest()}
   });
   document.addEventListener('change',e=>{if(e.target.closest&&e.target.closest('#party'))readRl()});
-  document.addEventListener('focusout',e=>{if(pend&&e.target.closest&&e.target.closest('#party'))setTimeout(render,0)});
+  document.addEventListener('focusout',e=>{if(pend&&e.target.closest&&e.target.closest('#party'))setTimeout(render,0);if(pendM&&e.target.closest&&e.target.closest('#char'))setTimeout(renderMine,0)});
   window.addEventListener('hashchange',()=>{if(/(^|[#&])s=/.test(location.hash))location.reload()});
   ping();
-  return {queue,render,slotsHtml,role,pushChar,get mode(){return mode}};
+  return {queue,render,slotsHtml,renderMine,role,get mode(){return mode}};
 })();
 renderChar();renderCombat();renderCamp();renderHist();renderMon();PARTY.render();
 </script>

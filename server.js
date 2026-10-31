@@ -77,6 +77,7 @@ const players = new Map();   // session token -> player
 const removed = new Map();   // session token -> { reason, at } so a removed player is told why
 let shared = { who: 'DM', round: 1, turn: 0, init: [], quests: [], notes: [] };
 let feed = [];
+let ground = [];            // items lying on the floor that anyone in the party can pick up
 let publicUrl = okUrl(String(process.env.PUBLIC_URL || '').replace(/\/+$/, '')) ? String(process.env.PUBLIC_URL).replace(/\/+$/, '') : '';
 let ver = 1;
 const hostWaiters = new Set();
@@ -84,12 +85,12 @@ const fails = [];
 
 function snap(isHost) {
   const roster = [...players.values()].map(p => {
-    const r = { name: p.name, cls: p.cls, lvl: p.lvl, hp: p.hp, max: p.max, ac: p.ac, on: p.on };
-    if (isHost) r.id = p.id;
+    const r = { id: p.id, name: p.name, cls: p.c.cls, lvl: p.c.lvl, hp: p.c.hp, max: p.c.max, ac: p.c.ac, on: p.on };
+    if (isHost) r.c = p.c; // only the host sees (and can change) the full sheet
     return r;
   });
   const f = feed.filter(x => isHost || !x.hid).slice(0, 30).map(x => (isHost ? x : { w: x.w, t: x.t }));
-  const s = { code, round: shared.round, turn: shared.turn, init: shared.init, roster, quests: shared.quests, notes: shared.notes, feed: f };
+  const s = { code, round: shared.round, turn: shared.turn, init: shared.init, roster, quests: shared.quests, notes: shared.notes, feed: f, ground };
   if (isHost) { s.site = SITE; s.publicUrl = publicUrl; }
   return s;
 }
@@ -100,7 +101,7 @@ function flush() {
   const fp = snap(false), fh = snap(true);
   for (const p of players.values()) {
     const w = p.wait;
-    if (w && w.v < ver) { clearTimeout(w.t); p.wait = null; json(w.res, 200, { v: ver, state: fp }); }
+    if (w && w.v < ver) { clearTimeout(w.t); p.wait = null; json(w.res, 200, { v: ver, state: Object.assign({}, fp, { me: p.c }) }); }
   }
   for (const w of [...hostWaiters]) {
     if (w.v < ver) { clearTimeout(w.t); hostWaiters.delete(w); json(w.res, 200, { v: ver, state: fh }); }
@@ -200,7 +201,7 @@ function playerPoll(req, res, u) {
   p.seen = Date.now();
   if (!p.on) { p.on = true; changed(); }
   if (p.wait) { clearTimeout(p.wait.t); json(p.wait.res, 200, { v, same: true }); p.wait = null; }
-  if (v < ver) return json(res, 200, { v: ver, state: snap(false) });
+  if (v < ver) return json(res, 200, { v: ver, state: Object.assign({}, snap(false), { me: p.c }) });
   const w = { res, v, t: setTimeout(() => { if (p.wait === w) { p.wait = null; p.seen = Date.now(); json(res, 200, { v, same: true }); } }, HOLD) };
   p.wait = w;
   res.on('close', () => { if (p.wait === w) { clearTimeout(w.t); p.wait = null; } });
@@ -258,14 +259,50 @@ function userFrom(token) {
   if (!(+parts[1] > Date.now())) return null;
   return Object.prototype.hasOwnProperty.call(accts, parts[0]) ? accts[parts[0]] : null;
 }
+const ITEMMAX = 40;
+const dv = (v, d) => (v == null ? d : v);
+const sanItems = a => {
+  const seen = new Set();
+  return arr(a).slice(0, ITEMMAX).map(x => ({ id: cl(x && x.id, 20).replace(/[^A-Za-z0-9]/g, '') || hex(4), n: cl(x && x.n, 60).trim(), q: num(dv(x && x.q, 1), 1, 999) }))
+    .filter(x => x.n).map(x => { while (seen.has(x.id)) x.id = hex(4); seen.add(x.id); return x; });
+};
 const sanChar = c => {
   c = c && typeof c === 'object' ? c : {};
   const ab = c.ab && typeof c.ab === 'object' ? c.ab : {}, A = {};
-  for (const k of ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA']) A[k] = num(ab[k] == null ? 10 : ab[k], 1, 30);
-  return { name: cl(c.name, 30).trim() || 'Adventurer', cls: cl(c.cls, 30), lvl: num(c.lvl, 1, 20), ab: A,
-    hp: num(c.hp, -999, 9999), max: num(c.max, 0, 9999), ac: num(c.ac, 0, 99), spd: num(c.spd, 0, 999),
-    inv: cl(c.inv, 3000), spells: cl(c.spells, 3000) };
+  for (const k of ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA']) A[k] = num(dv(ab[k], 10), 1, 30);
+  return { name: cl(c.name, 30).trim() || 'Adventurer', cls: cl(c.cls, 30), lvl: num(dv(c.lvl, 1), 1, 20), ab: A,
+    hp: num(dv(c.hp, 10), -999, 9999), max: num(dv(c.max, 10), 0, 9999), ac: num(dv(c.ac, 10), 0, 99), spd: num(dv(c.spd, 30), 0, 999),
+    inv: cl(c.inv, 3000), spells: cl(c.spells, 3000), items: sanItems(c.items) };
 };
+// a brand-new character: players only choose the name and class, the host sets everything else
+const mkChar = (name, cls) => sanChar({ name, cls });
+// the host's version of a sheet edit: only these fields, all re-checked
+const sanStats = (o, c) => {
+  o = o && typeof o === 'object' ? o : {};
+  const ab = o.ab && typeof o.ab === 'object' ? o.ab : {};
+  const r = Object.assign({}, c, { ab: Object.assign({}, c.ab) });
+  if (o.cls != null) r.cls = cl(o.cls, 30);
+  for (const [k, lo, hi] of [['lvl', 1, 20], ['hp', -999, 9999], ['max', 0, 9999], ['ac', 0, 99], ['spd', 0, 999]]) if (o[k] != null && o[k] !== '') r[k] = num(o[k], lo, hi);
+  for (const k of ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA']) if (ab[k] != null && ab[k] !== '') r.ab[k] = num(ab[k], 1, 30);
+  return r;
+};
+const lc = x => String(x).toLowerCase();
+const canAdd = (list, n, q) => { const x = list.find(i => lc(i.n) === lc(n)); return x ? x.q + q <= 999 : list.length < ITEMMAX; };
+const addTo = (list, n, q) => { const x = list.find(i => lc(i.n) === lc(n)); if (x) x.q = Math.min(999, x.q + q); else list.push({ id: hex(4), n, q }); };
+const takeFrom = (list, id, q) => {
+  const i = list.findIndex(x => x.id === id);
+  if (i < 0 || q > list[i].q) return null;
+  const it = list[i], n = it.n;
+  it.q -= q; if (it.q <= 0) list.splice(i, 1);
+  return { n, q };
+};
+const persist = p => {
+  if (!p.acct || !Object.prototype.hasOwnProperty.call(accts, p.acct)) return;
+  const ch = accts[p.acct].chars.find(x => x.id === p.cid);
+  if (ch) { ch.c = p.c; saveAccts(); }
+};
+const addFeed = (who, t) => { feed.unshift({ w: cl(who, 30), t: cl(t, 140), hid: false }); feed.length = Math.min(feed.length, 30); };
+const byId = id => [...players.values()].find(p => p.id === String(id));
 const loginFails = new Map(); // username -> recent failure times
 const afails = [];            // all failed logins, for a global brake
 const checkCode = (b, res) => {
@@ -321,16 +358,15 @@ const routes = {
     json(res, 200, { user: u.name, chars: chars(u) });
   },
   '/api/chars/save': (b, res) => {
+    // players can only create a character (name and class). Stats are set by the host, never by the player.
     const u = needAcct(b, res); if (!u) return;
-    const c = sanChar(b.c), id = cl(b.id, 40), cur = id && u.chars.find(x => x.id === id);
-    if (cur) cur.c = c;
-    else {
-      if (u.chars.length >= MAXCHARS) return json(res, 409, { error: 'You already have 5 characters. Delete one first.' });
-      if (u.chars.some(x => x.c.name.toLowerCase() === c.name.toLowerCase())) return json(res, 409, { error: 'You already have a character with that name.' });
-      u.chars.push({ id: hex(6), c });
-    }
+    const c = mkChar(b.c && b.c.name, b.c && b.c.cls);
+    if (u.chars.length >= MAXCHARS) return json(res, 409, { error: 'You already have 5 characters. Delete one first.' });
+    if (u.chars.some(x => x.c.name.toLowerCase() === c.name.toLowerCase())) return json(res, 409, { error: 'You already have a character with that name.' });
+    const id = hex(6);
+    u.chars.push({ id, c });
     saveAccts();
-    json(res, 200, { id: cur ? cur.id : u.chars[u.chars.length - 1].id, chars: chars(u) });
+    json(res, 200, { id, chars: chars(u) });
   },
   '/api/chars/del': (b, res) => {
     const u = needAcct(b, res); if (!u) return;
@@ -345,24 +381,58 @@ const routes = {
     const c = cl(b.code, 12).toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!same(c, code)) { fails.push(now); return json(res, 403, { error: 'Wrong party code.' }); }
     if (b.check === true) return json(res, 200, { ok: true });
-    const i = info(b);
+    let pc, acct = '', cid = '';
+    if (b.guest && typeof b.guest === 'object') pc = mkChar(b.guest.name, b.guest.cls);
+    else {
+      const u = userFrom(b.token);
+      if (!u) return json(res, 401, { error: 'Please log in again.' });
+      const ch = u.chars.find(x => x.id === cl(b.id, 40));
+      if (!ch) return json(res, 404, { error: 'That character was not found.' });
+      pc = sanChar(ch.c); acct = u.name.toLowerCase(); cid = ch.id;
+    }
     for (const [t, p] of players) {
-      if (p.name.toLowerCase() === i.name.toLowerCase()) {
+      if (p.name.toLowerCase() === pc.name.toLowerCase()) {
         if (p.on) return json(res, 409, { error: 'That name is already in the party. Pick a different character name.' });
         players.delete(t);
       }
     }
     if (players.size >= MAXP) return json(res, 409, { error: 'The party is full.' });
-    const p = Object.assign({ id: hex(6), token: tok(), wait: null, last: 0, seen: now, on: true }, i);
+    const p = { id: hex(6), token: tok(), wait: null, last: 0, lastInv: 0, seen: now, on: true, name: pc.name, c: pc, acct, cid };
     players.set(p.token, p);
-    logI('Player joined: ' + p.name + ' (' + players.size + ' in party)');
+    logI('Player joined: ' + p.name + (acct ? ' (account ' + acct + ')' : ' (guest)') + ', ' + players.size + ' in party');
     changed();
     json(res, 200, { token: p.token, id: p.id });
   },
-  '/api/upd': (b, res) => {
+  // players can only move items: drop to the floor, pick up from the floor, give to another player
+  '/api/inv': (b, res) => {
     const p = needPlayer(b, res); if (!p) return;
-    Object.assign(p, info(Object.assign({}, b, { name: p.name })));
-    p.seen = Date.now();
+    const now = Date.now();
+    if (now - p.lastInv < 250) return json(res, 429, { error: 'Slow down a little.' });
+    p.lastInv = now;
+    const q = num(b.q == null ? 1 : b.q, 1, 999), id = cl(b.id, 20), bad = () => json(res, 409, { error: 'That item or amount is not available.' });
+    if (b.op === 'drop') {
+      const it = p.c.items.find(x => x.id === id);
+      if (!it || q > it.q) return bad();
+      if (!canAdd(ground, it.n, q)) return json(res, 409, { error: 'The floor is too crowded.' });
+      const t = takeFrom(p.c.items, id, q); addTo(ground, t.n, t.q);
+      addFeed(p.name, 'dropped ' + t.q + '× ' + t.n);
+    } else if (b.op === 'pickup') {
+      const it = ground.find(x => x.id === id);
+      if (!it || q > it.q) return bad();
+      if (!canAdd(p.c.items, it.n, q)) return json(res, 409, { error: 'Your inventory is full.' });
+      const t = takeFrom(ground, id, q); addTo(p.c.items, t.n, t.q);
+      addFeed(p.name, 'picked up ' + t.q + '× ' + t.n);
+    } else if (b.op === 'give') {
+      const to = byId(b.to);
+      if (!to || to === p) return json(res, 409, { error: 'Pick someone in the party to give it to.' });
+      const it = p.c.items.find(x => x.id === id);
+      if (!it || q > it.q) return bad();
+      if (!canAdd(to.c.items, it.n, q)) return json(res, 409, { error: to.name + ' cannot carry any more.' });
+      const t = takeFrom(p.c.items, id, q); addTo(to.c.items, t.n, t.q);
+      persist(to);
+      addFeed(p.name, 'gave ' + t.q + '× ' + t.n + ' to ' + to.name);
+    } else return json(res, 400, { error: 'Unknown action.' });
+    persist(p);
     changed();
     json(res, 200, { ok: true });
   },
@@ -397,6 +467,42 @@ const routes = {
     addRoll(cl(b.who, 30) || shared.who, b, !!b.hid);
     json(res, 200, { ok: true });
   },
+  '/api/host/char': (b, res) => {
+    if (!needHost(b, res)) return;
+    const p = byId(b.id); if (!p) return json(res, 404, { error: 'That player is gone.' });
+    p.c = sanStats(b.c, p.c);
+    persist(p);
+    logI('Host edited ' + p.name + "'s sheet");
+    changed();
+    json(res, 200, { ok: true });
+  },
+  '/api/host/hp': (b, res) => {
+    if (!needHost(b, res)) return;
+    const p = byId(b.id); if (!p) return json(res, 404, { error: 'That player is gone.' });
+    p.c.hp = num(p.c.hp + num(b.d, -999, 999), -999, 9999);
+    persist(p);
+    changed();
+    json(res, 200, { ok: true });
+  },
+  '/api/host/item': (b, res) => {
+    if (!needHost(b, res)) return;
+    const list = b.to === 'ground' ? ground : (byId(b.to) || {}).c && byId(b.to).c.items;
+    if (!list) return json(res, 404, { error: 'That player is gone.' });
+    if (b.op === 'add') {
+      const n = cl(b.n, 60).trim(), q = num(b.q == null ? 1 : b.q, 1, 999);
+      if (!n) return json(res, 400, { error: 'Give the item a name.' });
+      if (!canAdd(list, n, q)) return json(res, 409, { error: 'No room for that.' });
+      addTo(list, n, q);
+      if (b.to === 'ground') addFeed('Host', 'put ' + q + '× ' + n + ' on the floor'); else addFeed('Host', 'gave ' + q + '× ' + n + ' to ' + byId(b.to).name);
+    } else if (b.op === 'remove') {
+      const it = list.find(x => x.id === cl(b.id, 20));
+      if (!it) return json(res, 404, { error: 'That item is gone.' });
+      takeFrom(list, it.id, it.q);
+    } else return json(res, 400, { error: 'Unknown action.' });
+    if (b.to !== 'ground') persist(byId(b.to));
+    changed();
+    json(res, 200, { ok: true });
+  },
   '/api/host/kick': (b, res) => {
     if (!needHost(b, res)) return;
     for (const p of [...players.values()]) if (p.id === String(b.id)) drop(p, 'kicked');
@@ -407,6 +513,7 @@ const routes = {
     if (!needHost(b, res)) return;
     for (const p of [...players.values()]) drop(p, 'reset');
     feed = [];
+    ground = [];
     code = mkCode();
     console.log('\n  New party code: ' + code + '\n');
     logI('Host made a new party code');
